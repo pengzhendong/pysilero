@@ -1,30 +1,54 @@
 #include "vad/vad_model.h"
 
-void VadModel::Reset() {
-  _h.resize(size_hc);
-  _c.resize(size_hc);
-  sr.resize(1);
-  std::memset(_h.data(), 0.0f, size_hc * sizeof(float));
-  std::memset(_c.data(), 0.0f, size_hc * sizeof(float));
-  triggerd = false;
-  temp_end = 0;
-  current_sample = 0;
+#include "glog/logging.h"
+
+VadModel::VadModel(const std::string& model_path, bool denoise, int sample_rate,
+                   float threshold, float min_sil_dur, float speech_pad)
+    : OnnxModel(model_path),
+      denoise_(denoise),
+      sample_rate_(sample_rate),
+      threshold_(threshold),
+      min_sil_dur_(min_sil_dur),
+      speech_pad_(speech_pad) {
+  denoiser_ = std::make_shared<Denoiser>();
+  resampler_ = std::make_shared<Resampler>();
+  sample_queue_ = std::make_shared<SampleQueue>();
+  Reset();
 }
 
-void VadModel::Predict(const std::vector<float>& data) {
-  int64_t input_node_dims[2] = {1, data.size()};
-  Ort::Value input_ort = Ort::Value::CreateTensor<float>(
-      memory_info_, const_cast<float*>(data.data()), data.size(),
-      input_node_dims, 2);
+void VadModel::Reset() {
+  h_.resize(SIZE_HC);
+  c_.resize(SIZE_HC);
+  std::memset(h_.data(), 0.0f, SIZE_HC * sizeof(float));
+  std::memset(c_.data(), 0.0f, SIZE_HC * sizeof(float));
+  on_speech_ = false;
+  temp_stop_ = 0;
+  current_pos_ = 0;
+  sample_queue_->Clear();
+  denoiser_->Reset();
+}
 
-  const int64_t sr_node_dims[1] = {1};
-  Ort::Value sr_ort = Ort::Value::CreateTensor<int64_t>(memory_info_, sr.data(),
-                                                        1, sr_node_dims, 1);
-  const int64_t hc_node_dims[3] = {2, 1, 64};
-  Ort::Value h_ort = Ort::Value::CreateTensor<float>(memory_info_, _h.data(),
-                                                     size_hc, hc_node_dims, 3);
-  Ort::Value c_ort = Ort::Value::CreateTensor<float>(memory_info_, _c.data(),
-                                                     size_hc, hc_node_dims, 3);
+float VadModel::Forward(const std::vector<float>& pcm) {
+  std::vector<float> input_pcm{pcm.data(), pcm.data() + pcm.size()};
+  for (int i = 0; i < input_pcm.size(); i++) {
+    input_pcm[i] /= 32768.0;
+  }
+
+  // batch_size * num_samples
+  const int64_t batch_size = 1;
+  int64_t input_node_dims[2] = {batch_size, input_pcm.size()};
+  auto input_ort = Ort::Value::CreateTensor<float>(
+      memory_info_, input_pcm.data(), input_pcm.size(), input_node_dims, 2);
+
+  const int64_t sr_node_dims[1] = {batch_size};
+  std::vector<int64_t> sr = {sample_rate_};
+  auto sr_ort = Ort::Value::CreateTensor<int64_t>(memory_info_, sr.data(),
+                                                  batch_size, sr_node_dims, 1);
+  const int64_t hc_node_dims[3] = {2, batch_size, 64};
+  auto h_ort = Ort::Value::CreateTensor<float>(memory_info_, h_.data(), SIZE_HC,
+                                               hc_node_dims, 3);
+  auto c_ort = Ort::Value::CreateTensor<float>(memory_info_, c_.data(), SIZE_HC,
+                                               hc_node_dims, 3);
 
   std::vector<Ort::Value> ort_inputs;
   ort_inputs.emplace_back(std::move(input_ort));
@@ -32,43 +56,75 @@ void VadModel::Predict(const std::vector<float>& data) {
   ort_inputs.emplace_back(std::move(h_ort));
   ort_inputs.emplace_back(std::move(c_ort));
 
-  // Infer
   auto ort_outputs = session_->Run(
       Ort::RunOptions{nullptr}, input_node_names_.data(), ort_inputs.data(),
       ort_inputs.size(), output_node_names_.data(), output_node_names_.size());
 
-  // Output probability & update h, c recursively
-  // MAX 4294967295 samples / 8 sample per ms / 1000 / 60 = 8947 minutes
-  float output = ort_outputs[0].GetTensorMutableData<float>()[0];
+  float posterier = ort_outputs[0].GetTensorMutableData<float>()[0];
   float* hn = ort_outputs[1].GetTensorMutableData<float>();
   float* cn = ort_outputs[2].GetTensorMutableData<float>();
-  _h.assign(hn, hn + size_hc);
-  _c.assign(cn, cn + size_hc);
+  h_.assign(hn, hn + SIZE_HC);
+  c_.assign(cn, cn + SIZE_HC);
 
-  // Push forward sample index
-  current_sample += data.size();
+  return posterier;
+}
 
-  // Reset temp_end when > threshold
-  if (output >= threshold) {
-    temp_end = 0;
-  }
-  // 1) Start
-  if (output >= threshold && triggerd == false) {
-    triggerd = true;
-    // minus window_size_samples to get precise start time point.
-    int speech_start = current_sample - data.size() - speech_pad_samples;
-    printf("[%.3fs, ", 1.0 * speech_start / sample_rate);
-  }
-  // 2) End
-  if (output < (threshold - 0.15) && triggerd == true) {
-    if (temp_end != 0) {
-      temp_end = current_sample;
+float VadModel::Vad(const std::vector<float>& pcm,
+                    std::vector<float>* start_pos,
+                    std::vector<float>* stop_pos) {
+  std::vector<float> in_pcm{pcm.data(), pcm.data() + pcm.size()};
+  if (denoise_) {
+    std::vector<float> resampled_pcm;
+    std::vector<float> denoised_pcm;
+    // 0. Upsample to 48k for RnNoise
+    if (sample_rate_ != 48000) {
+      resampler_->Resample(sample_rate_, in_pcm, 48000, &resampled_pcm);
+      in_pcm = resampled_pcm;
     }
-    if (current_sample - temp_end >= min_silence_samples) {
-      int speech_end = current_sample + speech_pad_samples;
-      temp_end = 0;
-      triggerd = false;
-      printf("%.3fs]\n", 1.0 * speech_end / sample_rate);
-    }
+    // 1. Denoise with RnNoise
+    denoiser_->Denoise(in_pcm, &denoised_pcm);
+    in_pcm = denoised_pcm;
+    // 2. Downsample to 16k for VAD
+    resampler_->Resample(48000, in_pcm, 16000, &resampled_pcm);
+    sample_rate_ = 16000;
+    in_pcm = resampled_pcm;
   }
+  sample_queue_->AcceptWaveform(in_pcm);
+
+  // Support 512 1024 1536 samples for 16k
+  int frame_ms = 64;
+  int frame_size = frame_ms * (16000 / 1000);
+  int num_frames = sample_queue_->NumSamples() / frame_size;
+
+  for (int i = 0; i < num_frames; i++) {
+    sample_queue_->Read(frame_size, &in_pcm);
+    float posterier = Forward(in_pcm);
+    // 1. start
+    if (posterier >= threshold_) {
+      temp_stop_ = 0;
+      if (on_speech_ == false) {
+        on_speech_ = true;
+        float start = current_pos_ - speech_pad_;
+        if (start_pos < 0) {
+          start = 0;
+        }
+        start_pos->emplace_back(round(start * 1000) / 1000);
+      }
+    }
+    // 2. stop
+    if (posterier < (threshold_ - 0.15) && on_speech_ == true) {
+      if (temp_stop_ != 0) {
+        temp_stop_ = current_pos_;
+      }
+      // hangover
+      if (current_pos_ - temp_stop_ >= min_sil_dur_) {
+        temp_stop_ = 0;
+        on_speech_ = false;
+        float stop = current_pos_ + speech_pad_;
+        stop_pos->emplace_back(round(stop * 1000) / 1000);
+      }
+    }
+    current_pos_ += 1.0 * in_pcm.size() / sample_rate_;
+  }
+  return current_pos_;
 }

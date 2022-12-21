@@ -2,10 +2,11 @@
 
 #include "gflags/gflags.h"
 
+#include "frontend/wav.h"
 #include "vad/vad_model.h"
-#include "wav.h"
 
 DEFINE_string(wav_path, "", "wav path");
+DEFINE_double(threshold, 0.5, "threshold of voice activity detection");
 DEFINE_string(model_path, "", "voice activity detection model path");
 
 int main(int argc, char* argv[]) {
@@ -13,24 +14,30 @@ int main(int argc, char* argv[]) {
   google::InitGoogleLogging(argv[0]);
 
   wav::WavReader wav_reader(FLAGS_wav_path);
-  std::vector<float> input_wav(wav_reader.num_samples());
-  for (int i = 0; i < wav_reader.num_samples(); i++) {
-    input_wav[i] = wav_reader.data()[i] / 32768;
+  int num_channels = wav_reader.num_channels();
+  CHECK_EQ(num_channels, 1) << "Only support mono (1 channel) wav!";
+  int sample_rate = wav_reader.sample_rate();
+  const float* pcm = wav_reader.data();
+  int num_samples = wav_reader.num_samples();
+  std::vector<float> input_wav{pcm, pcm + num_samples};
+
+  bool denoise = true;
+  float min_sil_dur = 0;  // in seconds
+  float speech_pad = 0;   // in seconds
+  VadModel vad(FLAGS_model_path, denoise, sample_rate, FLAGS_threshold,
+               min_sil_dur, speech_pad);
+
+  std::vector<float> start_pos;
+  std::vector<float> stop_pos;
+  float dur = vad.Vad(input_wav, &start_pos, &stop_pos);
+
+  if (!stop_pos.empty() && stop_pos.back() > dur) {
+    stop_pos.back() = dur;
   }
-
-  int test_sr = 8000;
-  float test_threshold = 0.5f;
-  int test_min_silence_duration_ms = 0;
-  int test_speech_pad_ms = 0;
-  VadModel vad(FLAGS_model_path, test_sr, test_threshold,
-               test_min_silence_duration_ms, test_speech_pad_ms);
-
-  int test_frame_ms = 64;
-  int test_window_samples = test_frame_ms * (test_sr / 1000);
-  // Assign when init, support 256 512 768 for 8k; 512 1024 1536 for 16k.
-  for (int j = 0; j < wav_reader.num_samples(); j += test_window_samples) {
-    std::vector<float> r{&input_wav[0] + j,
-                         &input_wav[0] + j + test_window_samples};
-    vad.Predict(r);
+  if (stop_pos.size() < start_pos.size()) {
+    stop_pos.emplace_back(dur);
+  }
+  for (int i = 0; i < start_pos.size(); i++) {
+    LOG(INFO) << "[" << start_pos[i] << ", " << stop_pos[i] << "]s";
   }
 }

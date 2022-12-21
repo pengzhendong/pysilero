@@ -3,36 +3,45 @@
 
 #include "vad/onnx_model.h"
 
+#include <memory>
+
+#include "frontend/denoiser.h"
+#include "frontend/resampler.h"
+#include "frontend/sample_queue.h"
+
+#define SIZE_HC 128  // 2 * 1 * 64
+
 class VadModel : public OnnxModel {
  public:
-  VadModel(const std::string& model_path, int sample_rate, float threshold,
-           int min_silence_duration_ms, int speech_pad_ms)
-      : OnnxModel(model_path), sample_rate(sample_rate), threshold(threshold) {
-    int sr_per_ms = sample_rate / 1000;  // Assign when init, support 8 or 16
-    min_silence_samples = sr_per_ms * min_silence_duration_ms;
-    speech_pad_samples = sr_per_ms * speech_pad_ms;
-    Reset();
-  }
+  VadModel(const std::string& model_path, bool denoise, int sample_rate,
+           float threshold, float min_sil_dur, float speech_pad);
 
   void Reset();
-  void Predict(const std::vector<float>& data);
+
+  float Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
+            std::vector<float>* stop_pos);
 
  private:
-  int sample_rate;
-  float threshold;
-  int min_silence_samples;  // sr_per_ms * #ms
-  int speech_pad_samples;   // usually a
+  float Forward(const std::vector<float>& pcm);
+
+  bool denoise_ = false;
+  int sample_rate_;
+  float threshold_;
+  float min_sil_dur_;
+  float speech_pad_;
 
   // model states
-  bool triggerd = false;
-  unsigned int temp_end = 0;
-  unsigned int current_sample = 0;
+  bool on_speech_ = false;
+  float temp_stop_ = 0;
+  float current_pos_ = 0;
 
   // Onnx model
-  int size_hc = 2 * 1 * 64;  // It's FIXED.
-  std::vector<float> _h;
-  std::vector<float> _c;
-  std::vector<int64_t> sr;
+  std::vector<float> h_;
+  std::vector<float> c_;
+
+  std::shared_ptr<Denoiser> denoiser_ = nullptr;
+  std::shared_ptr<Resampler> resampler_ = nullptr;
+  std::shared_ptr<SampleQueue> sample_queue_ = nullptr;
 };
 
 #endif  // VAD_VAD_MODEL_H_

@@ -16,7 +16,7 @@ if(NOT MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -pthread -fPIC")
 else()
   set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
-  add_compile_options(/W0 /wd4244 /wd4267)
+  add_compile_options(/W0 /wd4150 /wd4244 /wd4267)
   add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 endif()
 
@@ -25,13 +25,12 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 include(gflags)
 set(WITH_GFLAGS OFF CACHE BOOL "whether build glog with gflags" FORCE)
+include(samplerate)  # Note: must include libsamplerate before glog
 include(glog)
+include(rnnoise)
 include(onnx)
 
-add_library(vad
-  vad/onnx_model.cc
-  vad/vad_model.cc
-)
-
+add_subdirectory(frontend)
+add_subdirectory(vad)
 add_executable(vad_main bin/vad_main.cc)
-target_link_libraries(vad_main PUBLIC vad onnxruntime gflags glog)
+target_link_libraries(vad_main PUBLIC vad gflags)
