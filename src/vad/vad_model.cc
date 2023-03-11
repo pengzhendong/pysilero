@@ -105,7 +105,7 @@ float VadModel::Vad(const std::vector<float>& pcm,
       if (on_speech_ == false) {
         on_speech_ = true;
         float start = current_pos_ - speech_pad_;
-        if (start_pos < 0) {
+        if (start < 0) {
           start = 0;
         }
         start_pos->emplace_back(round(start * 1000) / 1000);
