@@ -113,7 +113,7 @@ float VadModel::Vad(const std::vector<float>& pcm,
     }
     // 2. stop
     if (posterier < (threshold_ - 0.15) && on_speech_ == true) {
-      if (temp_stop_ != 0) {
+      if (temp_stop_ == 0) {
         temp_stop_ = current_pos_;
       }
       // hangover
