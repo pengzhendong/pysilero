@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
-project(speaker_diarization VERSION 0.1)
+project(silero_vad VERSION 0.1)
 
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
