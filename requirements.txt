@@ -1,0 +1,4 @@
+importlib_resources
+librosa
+numpy
+onnxruntime
