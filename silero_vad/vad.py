@@ -7,7 +7,7 @@ import warnings
 
 class OnnxWrapper:
     def __init__(self, path=None):
-        path = path or files("silero_vad").joinpath("silero_vad.onnx")
+        path = path or str(files("silero_vad").joinpath("silero_vad.onnx"))
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
