@@ -147,7 +147,7 @@ def get_speech_timestamps(
                 continue
         # in speech, and speech duration is more than max speech duration
         if triggered and current_samples - current_speech["start"] > max_speech_samples:
-            # prev_end larger than 0 means there is a short silence in the middle, avoid aggressive cutting
+            # prev_end larger than 0 means there is a short silence in the middle avoid aggressive cutting
             if prev_end > 0:
                 current_speech["end"] = prev_end
                 speeches.append(current_speech)
@@ -285,9 +285,12 @@ class VADIterator:
 
         if speech_prob >= self.threshold:
             self.temp_end = 0
+            # triggered = True means the speech has been started
             if not self.triggered:
                 self.triggered = True
-                speech_start = self.current_sample - self.speech_pad_samples
+                speech_start = (
+                    self.current_sample - window_size_samples - self.speech_pad_samples
+                )
                 if return_seconds:
                     speech_start = round(speech_start / self.sampling_rate, 3)
                 return {"start": speech_start}
