@@ -271,10 +271,12 @@ class VADIterator:
         self.temp_end = 0
         self.current_sample = 0
 
-    def __call__(self, x, return_seconds=False):
+    def __call__(self, x, return_relative=False, return_seconds=False):
         """
         x: audio chunk
 
+        return_relative: bool (default - False)
+            whether return timestamps relative to the current audio chunk
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
@@ -291,6 +293,8 @@ class VADIterator:
                 speech_start = (
                     self.current_sample - window_size_samples - self.speech_pad_samples
                 )
+                if return_relative:
+                    speech_start = self.current_sample - speech_start
                 if return_seconds:
                     speech_start = round(speech_start / self.sampling_rate, 3)
                 return {"start": speech_start}
@@ -299,6 +303,8 @@ class VADIterator:
                 self.temp_end = self.current_sample
             if self.current_sample - self.temp_end >= self.min_silence_samples:
                 speech_end = self.temp_end + self.speech_pad_samples
+                if return_relative:
+                    speech_end = self.current_sample - speech_end
                 if return_seconds:
                     speech_end = round(speech_end / self.sampling_rate, 3)
                 self.temp_end = 0
