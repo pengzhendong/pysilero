@@ -87,7 +87,7 @@ def get_speech_timestamps(
         step = 1
         wav, sr = librosa.load(wav_path, sr=sr)
     else:
-        step = sr // 16000
+        step = sr / 16000
         wav, sr = librosa.load(wav_path, sr=16000)
     if len(wav.shape) > 1:
         raise ValueError(
@@ -213,14 +213,15 @@ def get_speech_timestamps(
         else:
             speech["end"] = int(min(num_samples, speech["end"] + speech_pad_samples))
 
-    if step > 1:
-        for speech_dict in speeches:
-            speech_dict["start"] *= step
-            speech_dict["end"] *= step
     if return_seconds:
         for speech_dict in speeches:
             speech_dict["start"] = round(speech_dict["start"] / sr, 3)
             speech_dict["end"] = round(speech_dict["end"] / sr, 3)
+    elif step > 1.0:
+        for speech_dict in speeches:
+            speech_dict["start"] *= step
+            speech_dict["end"] *= step
+
     return speeches
 
 
