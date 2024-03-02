@@ -14,8 +14,20 @@ VadModel::VadModel(const std::string& model_path, bool denoise, int sample_rate,
       min_sil_dur_samples_(min_sil_dur_ms * sample_rate / 1000),
       speech_pad_samples_(speech_pad_ms * sample_rate / 1000) {
   denoiser_ = std::make_shared<Denoiser>();
-  resampler_ = std::make_shared<Resampler>();
   sample_queue_ = std::make_shared<SampleQueue>();
+  if (denoise) {
+    if (sample_rate != 48000) {
+      upsampler_ = std::make_shared<Resampler>(sample_rate, 48000);
+      if (sample_rate == 8000) {
+        downsampler_ = std::make_shared<Resampler>(48000, 8000);
+      } else {
+        downsampler_ = std::make_shared<Resampler>(48000, 16000);
+      }
+    }
+  } else if (sample_rate != 16000 || sample_rate != 8000) {
+    downsampler_ = std::make_shared<Resampler>(sample_rate, 16000);
+  }
+
   Reset();
 }
 
@@ -29,6 +41,12 @@ void VadModel::Reset() {
   current_sample_ = 0;
   sample_queue_->Clear();
   denoiser_->Reset();
+  if (upsampler_) {
+    upsampler_->Reset();
+  }
+  if (downsampler_) {
+    downsampler_->Reset();
+  }
 }
 
 float VadModel::Forward(const std::vector<float>& pcm) {
@@ -74,19 +92,21 @@ float VadModel::Forward(const std::vector<float>& pcm) {
 
 void VadModel::AcceptWaveform(const std::vector<float>& pcm) {
   std::vector<float> in_pcm{pcm.data(), pcm.data() + pcm.size()};
+  std::vector<float> resampled_pcm;
   if (denoise_) {
-    std::vector<float> resampled_pcm;
     std::vector<float> denoised_pcm;
     // 0. Upsample to 48k for RnNoise
-    if (sample_rate_ != 48000) {
-      resampler_->Resample(sample_rate_, in_pcm, 48000, &resampled_pcm);
+    if (upsampler_) {
+      upsampler_->Resample(in_pcm, &resampled_pcm);
       in_pcm = resampled_pcm;
     }
     // 1. Denoise with RnNoise
     denoiser_->Denoise(in_pcm, &denoised_pcm);
     in_pcm = denoised_pcm;
-    // 2. Downsample to 16k for VAD
-    resampler_->Resample(48000, in_pcm, 16000, &resampled_pcm);
+  }
+  // 2. Downsample to 16k for VAD
+  if (downsampler_) {
+    downsampler_->Resample(in_pcm, &resampled_pcm);
     sample_rate_ = 16000;
     in_pcm = resampled_pcm;
   }
@@ -94,7 +114,8 @@ void VadModel::AcceptWaveform(const std::vector<float>& pcm) {
 }
 
 void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
-                   std::vector<float>* end_pos) {
+                   std::vector<float>* end_pos, bool return_relative,
+                   bool return_seconds) {
   AcceptWaveform(pcm);
 
   std::vector<float> in_pcm;
@@ -112,8 +133,13 @@ void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
         on_speech_ = true;
         float speech_start =
             current_sample_ - window_size_samples - speech_pad_samples_;
-        start_pos->emplace_back(round(speech_start / sample_rate_ * 1000) /
-                                1000);
+        if (return_relative) {
+          speech_start = current_sample_ - speech_start;
+        }
+        if (return_seconds) {
+          speech_start = round(speech_start / sample_rate_ * 1000) / 1000;
+        }
+        start_pos->emplace_back(speech_start);
       }
     }
     // 2. stop
@@ -124,9 +150,15 @@ void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
       // hangover
       if (current_sample_ - temp_end_ >= min_sil_dur_samples_) {
         float speech_end = current_sample_ + speech_pad_samples_;
+        if (return_relative) {
+          speech_end = current_sample_ - speech_end;
+        }
+        if (return_seconds) {
+          speech_end = round(speech_end / sample_rate_ * 1000) / 1000;
+        }
         temp_end_ = 0;
         on_speech_ = false;
-        end_pos->emplace_back(round(speech_end / sample_rate_ * 1000) / 1000);
+        end_pos->emplace_back(speech_end);
       }
     }
   }

@@ -20,7 +20,8 @@ class VadModel : public OnnxModel {
 
   void AcceptWaveform(const std::vector<float>& pcm);
   void Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
-           std::vector<float>* end_pos);
+           std::vector<float>* end_pos, bool return_relative = false,
+           bool return_seconds = false);
 
  private:
   float Forward(const std::vector<float>& pcm);
@@ -47,7 +48,8 @@ class VadModel : public OnnxModel {
   std::vector<float> c_;
 
   std::shared_ptr<Denoiser> denoiser_ = nullptr;
-  std::shared_ptr<Resampler> resampler_ = nullptr;
+  std::shared_ptr<Resampler> upsampler_ = nullptr;
+  std::shared_ptr<Resampler> downsampler_ = nullptr;
   std::shared_ptr<SampleQueue> sample_queue_ = nullptr;
 };
 

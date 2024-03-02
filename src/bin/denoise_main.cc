@@ -16,32 +16,43 @@
 
 #include "gflags/gflags.h"
 
+#include "frontend/denoiser.h"
+#include "frontend/resampler.h"
 #include "frontend/wav.h"
-#include "vad/vad_model.h"
 
-DEFINE_string(wav_path, "", "wav path");
-DEFINE_double(threshold, 0.5, "threshold of voice activity detection");
-DEFINE_string(model_path, "", "voice activity detection model path");
+DEFINE_string(input_wav_path, "", "input wav path");
+DEFINE_string(output_wav_path, "", "output wav path");
 
 int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, false);
   google::InitGoogleLogging(argv[0]);
 
-  wav::WavReader wav_reader(FLAGS_wav_path);
+  wav::WavReader wav_reader(FLAGS_input_wav_path);
   int num_channels = wav_reader.num_channels();
   CHECK_EQ(num_channels, 1) << "Only support mono (1 channel) wav!";
   int sample_rate = wav_reader.sample_rate();
   const float* pcm = wav_reader.data();
   int num_samples = wav_reader.num_samples();
-  std::vector<float> input_wav{pcm, pcm + num_samples};
+  std::vector<float> input_pcm{pcm, pcm + num_samples};
 
-  VadModel vad(FLAGS_model_path, true, sample_rate, FLAGS_threshold);
-
-  std::vector<float> start_pos;
-  std::vector<float> end_pos;
-  vad.Vad(input_wav, &start_pos, &end_pos, false, true);
-
-  for (int i = 0; i < end_pos.size(); i++) {
-    LOG(INFO) << "[" << start_pos[i] << ", " << end_pos[i] << "]s";
+  std::vector<float> output_pcm;
+  // 0. Upsample to 48k for RnNoise
+  if (sample_rate != 48000) {
+    Resampler upsampler(sample_rate, 48000);
+    upsampler.Resample(input_pcm, &output_pcm, true);
+    input_pcm = output_pcm;
   }
+  // 1. Denoise with RnNoise
+  Denoiser denoiser;
+  denoiser.Denoise(input_pcm, &output_pcm);
+  // 2. Downsample back to original sample rate
+  if (sample_rate != 48000) {
+    input_pcm = output_pcm;
+    Resampler downsampler(48000, sample_rate);
+    downsampler.Resample(input_pcm, &output_pcm, true);
+  }
+
+  wav::WavWriter writer(output_pcm.data(), output_pcm.size(), num_channels,
+                        sample_rate, 16);
+  writer.Write(FLAGS_output_wav_path);
 }

@@ -23,17 +23,18 @@
 
 class Resampler {
  public:
-  explicit Resampler(int converter = SRC_SINC_BEST_QUALITY)
-      : converter_(converter) {
-    src_data_ = std::make_shared<SRC_DATA>();
-  }
+  explicit Resampler(int in_sr, int out_sr,
+                     int converter = SRC_SINC_BEST_QUALITY);
+  ~Resampler() { src_delete(src_state_); }
 
-  void Resample(int in_sr, const std::vector<float>& in_pcm, int out_sr,
-                std::vector<float>* out_pcm, int enf_of_input = 0);
+  void Reset() { src_reset(src_state_); }
+
+  void Resample(const std::vector<float>& in_pcm, std::vector<float>* out_pcm,
+                int enf_of_input = 0);
 
  private:
-  int converter_;
-  std::shared_ptr<SRC_DATA> src_data_;
+  float src_ratio_;
+  SRC_STATE* src_state_;
 };
 
 #endif  // FRONTEND_RESAMPLER_H_

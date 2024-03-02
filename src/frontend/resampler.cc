@@ -14,21 +14,26 @@
 
 #include "frontend/resampler.h"
 
-void Resampler::Resample(int in_sr, const std::vector<float>& in_pcm,
-                         int out_sr, std::vector<float>* out_pcm,
-                         int end_of_input) {
-  float ratio = 1.0 * out_sr / in_sr;
-  out_pcm->resize(in_pcm.size() * ratio);
+Resampler::Resampler(int in_sr, int out_sr, int converter) {
+  src_state_ = src_new(converter, 1, nullptr);
+  src_ratio_ = out_sr * 1.0 / in_sr;
+  src_set_ratio(src_state_, src_ratio_);
+}
 
-  src_data_->src_ratio = ratio;
-  src_data_->data_in = in_pcm.data();
-  src_data_->input_frames = in_pcm.size();
-  src_data_->data_out = out_pcm->data();
-  src_data_->output_frames = out_pcm->size();
-  src_data_->end_of_input = end_of_input;
+void Resampler::Resample(const std::vector<float>& in_pcm,
+                         std::vector<float>* out_pcm, int end_of_input) {
+  out_pcm->resize(in_pcm.size() * src_ratio_);
 
-  int error = src_simple(src_data_.get(), converter_, 1);
+  SRC_DATA src_data;
+  src_data.src_ratio = src_ratio_;
+  src_data.end_of_input = end_of_input;
+  src_data.data_in = in_pcm.data();
+  src_data.input_frames = in_pcm.size();
+  src_data.data_out = out_pcm->data();
+  src_data.output_frames = out_pcm->size();
+
+  int error = src_process(src_state_, &src_data);
   if (error != 0) {
-    LOG(FATAL) << "src_simple error: " << src_strerror(error);
+    LOG(FATAL) << "src_process error: " << src_strerror(error);
   }
 }
