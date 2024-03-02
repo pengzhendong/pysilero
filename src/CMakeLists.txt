@@ -28,7 +28,7 @@ set(WITH_GFLAGS OFF CACHE BOOL "whether build glog with gflags" FORCE)
 include(samplerate)  # Note: must include libsamplerate before glog
 include(glog)
 include(rnnoise)
-include(onnx)
+include(onnxruntime)
 
 add_subdirectory(frontend)
 add_dependencies(frontend RnNoise)
