@@ -6,13 +6,13 @@
 #include "glog/logging.h"
 
 VadModel::VadModel(const std::string& model_path, bool denoise, int sample_rate,
-                   float threshold, float min_sil_dur, float speech_pad)
+                   float threshold, int min_sil_dur_ms, int speech_pad_ms)
     : OnnxModel(model_path),
       denoise_(denoise),
       sample_rate_(sample_rate),
       threshold_(threshold),
-      min_sil_dur_(min_sil_dur),
-      speech_pad_(speech_pad) {
+      min_sil_dur_samples_(min_sil_dur_ms * sample_rate / 1000),
+      speech_pad_samples_(speech_pad_ms * sample_rate / 1000) {
   denoiser_ = std::make_shared<Denoiser>();
   resampler_ = std::make_shared<Resampler>();
   sample_queue_ = std::make_shared<SampleQueue>();
@@ -25,8 +25,8 @@ void VadModel::Reset() {
   std::memset(h_.data(), 0.0f, SIZE_HC * sizeof(float));
   std::memset(c_.data(), 0.0f, SIZE_HC * sizeof(float));
   on_speech_ = false;
-  temp_stop_ = 0;
-  current_pos_ = 0;
+  temp_end_ = 0;
+  current_sample_ = 0;
   sample_queue_->Clear();
   denoiser_->Reset();
 }
@@ -72,9 +72,7 @@ float VadModel::Forward(const std::vector<float>& pcm) {
   return posterier;
 }
 
-float VadModel::Vad(const std::vector<float>& pcm,
-                    std::vector<float>* start_pos,
-                    std::vector<float>* stop_pos) {
+void VadModel::AcceptWaveform(const std::vector<float>& pcm) {
   std::vector<float> in_pcm{pcm.data(), pcm.data() + pcm.size()};
   if (denoise_) {
     std::vector<float> resampled_pcm;
@@ -93,41 +91,43 @@ float VadModel::Vad(const std::vector<float>& pcm,
     in_pcm = resampled_pcm;
   }
   sample_queue_->AcceptWaveform(in_pcm);
+}
 
-  // Support 512 1024 1536 samples for 16k
-  int frame_ms = 64;
-  int frame_size = frame_ms * (16000 / 1000);
-  int num_frames = sample_queue_->NumSamples() / frame_size;
+void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
+                   std::vector<float>* end_pos) {
+  AcceptWaveform(pcm);
 
+  std::vector<float> in_pcm;
+  int num_frames = sample_queue_->NumSamples() / frame_size_;
   for (int i = 0; i < num_frames; i++) {
-    sample_queue_->Read(frame_size, &in_pcm);
-    float posterier = Forward(in_pcm);
+    sample_queue_->Read(frame_size_, &in_pcm);
+    int window_size_samples = in_pcm.size();
+    current_sample_ += window_size_samples;
+    float speech_prob = Forward(in_pcm);
+
     // 1. start
-    if (posterier >= threshold_) {
-      temp_stop_ = 0;
+    if (speech_prob >= threshold_) {
+      temp_end_ = 0;
       if (on_speech_ == false) {
         on_speech_ = true;
-        float start = current_pos_ - speech_pad_;
-        if (start < 0) {
-          start = 0;
-        }
-        start_pos->emplace_back(round(start * 1000) / 1000);
+        float speech_start =
+            current_sample_ - window_size_samples - speech_pad_samples_;
+        start_pos->emplace_back(round(speech_start / sample_rate_ * 1000) /
+                                1000);
       }
     }
     // 2. stop
-    if (posterier < (threshold_ - 0.15) && on_speech_ == true) {
-      if (temp_stop_ == 0) {
-        temp_stop_ = current_pos_;
+    if (speech_prob < (threshold_ - 0.15) && on_speech_ == true) {
+      if (temp_end_ == 0) {
+        temp_end_ = current_sample_;
       }
       // hangover
-      if (current_pos_ - temp_stop_ >= min_sil_dur_) {
-        temp_stop_ = 0;
+      if (current_sample_ - temp_end_ >= min_sil_dur_samples_) {
+        float speech_end = current_sample_ + speech_pad_samples_;
+        temp_end_ = 0;
         on_speech_ = false;
-        float stop = current_pos_ + speech_pad_;
-        stop_pos->emplace_back(round(stop * 1000) / 1000);
+        end_pos->emplace_back(round(speech_end / sample_rate_ * 1000) / 1000);
       }
     }
-    current_pos_ += 1.0 * in_pcm.size() / sample_rate_;
   }
-  return current_pos_;
 }

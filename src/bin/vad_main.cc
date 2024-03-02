@@ -36,22 +36,13 @@ int main(int argc, char* argv[]) {
   std::vector<float> input_wav{pcm, pcm + num_samples};
 
   bool denoise = true;
-  float min_sil_dur = 0;  // in seconds
-  float speech_pad = 0;   // in seconds
-  VadModel vad(FLAGS_model_path, denoise, sample_rate, FLAGS_threshold,
-               min_sil_dur, speech_pad);
+  VadModel vad(FLAGS_model_path, denoise, sample_rate, FLAGS_threshold);
 
   std::vector<float> start_pos;
-  std::vector<float> stop_pos;
-  float dur = vad.Vad(input_wav, &start_pos, &stop_pos);
+  std::vector<float> end_pos;
+  vad.Vad(input_wav, &start_pos, &end_pos);
 
-  if (!stop_pos.empty() && stop_pos.back() > dur) {
-    stop_pos.back() = dur;
-  }
-  if (stop_pos.size() < start_pos.size()) {
-    stop_pos.emplace_back(dur);
-  }
-  for (int i = 0; i < start_pos.size(); i++) {
-    LOG(INFO) << "[" << start_pos[i] << ", " << stop_pos[i] << "]s";
+  for (int i = 0; i < end_pos.size(); i++) {
+    LOG(INFO) << "[" << start_pos[i] << ", " << end_pos[i] << "]s";
   }
 }

@@ -14,26 +14,33 @@
 class VadModel : public OnnxModel {
  public:
   VadModel(const std::string& model_path, bool denoise, int sample_rate,
-           float threshold, float min_sil_dur, float speech_pad);
+           float threshold, int min_sil_dur_ms = 100, int speech_pad_ms = 30);
 
   void Reset();
 
-  float Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
-            std::vector<float>* stop_pos);
+  void AcceptWaveform(const std::vector<float>& pcm);
+  void Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
+           std::vector<float>* end_pos);
 
  private:
   float Forward(const std::vector<float>& pcm);
 
+  // 16k sample rate:
+  // - frame_samples: 512 1024 1536
+  // - frame_ms: 32 64 96
+  int frame_ms_ = 32;
+  int frame_size_ = frame_ms_ * (16000 / 1000);
+
   bool denoise_ = false;
   int sample_rate_;
   float threshold_;
-  float min_sil_dur_;
-  float speech_pad_;
+  int min_sil_dur_samples_;
+  int speech_pad_samples_;
 
   // model states
   bool on_speech_ = false;
-  float temp_stop_ = 0;
-  float current_pos_ = 0;
+  float temp_end_ = 0;
+  int current_sample_ = 0;
 
   // Onnx model
   std::vector<float> h_;

@@ -15,7 +15,8 @@
 #include "frontend/resampler.h"
 
 void Resampler::Resample(int in_sr, const std::vector<float>& in_pcm,
-                         int out_sr, std::vector<float>* out_pcm) {
+                         int out_sr, std::vector<float>* out_pcm,
+                         int end_of_input) {
   float ratio = 1.0 * out_sr / in_sr;
   out_pcm->resize(in_pcm.size() * ratio);
 
@@ -24,6 +25,7 @@ void Resampler::Resample(int in_sr, const std::vector<float>& in_pcm,
   src_data_->input_frames = in_pcm.size();
   src_data_->data_out = out_pcm->data();
   src_data_->output_frames = out_pcm->size();
+  src_data_->end_of_input = end_of_input;
 
   int error = src_simple(src_data_.get(), converter_, 1);
   if (error != 0) {

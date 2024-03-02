@@ -29,7 +29,7 @@ class Resampler {
   }
 
   void Resample(int in_sr, const std::vector<float>& in_pcm, int out_sr,
-                std::vector<float>* out_pcm);
+                std::vector<float>* out_pcm, int enf_of_input = 0);
 
  private:
   int converter_;
