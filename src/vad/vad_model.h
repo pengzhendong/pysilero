@@ -19,8 +19,7 @@ class VadModel : public OnnxModel {
   void Reset();
 
   void AcceptWaveform(const std::vector<float>& pcm);
-  void Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
-           std::vector<float>* end_pos, bool return_relative = false,
+  void Vad(float* speech_start, float* speech_end, bool return_relative = false,
            bool return_seconds = false);
 
  private:

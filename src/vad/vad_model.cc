@@ -57,7 +57,8 @@ float VadModel::Forward(const std::vector<float>& pcm) {
 
   // batch_size * num_samples
   const int64_t batch_size = 1;
-  int64_t input_node_dims[2] = {batch_size, input_pcm.size()};
+  int64_t input_node_dims[2] = {batch_size,
+                                static_cast<int64_t>(input_pcm.size())};
   auto input_ort = Ort::Value::CreateTensor<float>(
       memory_info_, input_pcm.data(), input_pcm.size(), input_node_dims, 2);
 
@@ -113,14 +114,11 @@ void VadModel::AcceptWaveform(const std::vector<float>& pcm) {
   sample_queue_->AcceptWaveform(in_pcm);
 }
 
-void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
-                   std::vector<float>* end_pos, bool return_relative,
+void VadModel::Vad(float* speech_start, float* speech_end, bool return_relative,
                    bool return_seconds) {
-  AcceptWaveform(pcm);
-
   std::vector<float> in_pcm;
   int num_frames = sample_queue_->NumSamples() / frame_size_;
-  for (int i = 0; i < num_frames; i++) {
+  if (num_frames > 0) {
     sample_queue_->Read(frame_size_, &in_pcm);
     int window_size_samples = in_pcm.size();
     current_sample_ += window_size_samples;
@@ -131,15 +129,14 @@ void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
       temp_end_ = 0;
       if (on_speech_ == false) {
         on_speech_ = true;
-        float speech_start =
+        *speech_start =
             current_sample_ - window_size_samples - speech_pad_samples_;
         if (return_relative) {
-          speech_start = current_sample_ - speech_start;
+          *speech_start = current_sample_ - *speech_start;
         }
         if (return_seconds) {
-          speech_start = round(speech_start / sample_rate_ * 1000) / 1000;
+          *speech_start = round(*speech_start / sample_rate_ * 1000) / 1000;
         }
-        start_pos->emplace_back(speech_start);
       }
     }
     // 2. stop
@@ -149,16 +146,15 @@ void VadModel::Vad(const std::vector<float>& pcm, std::vector<float>* start_pos,
       }
       // hangover
       if (current_sample_ - temp_end_ >= min_sil_dur_samples_) {
-        float speech_end = current_sample_ + speech_pad_samples_;
+        *speech_end = temp_end_ + speech_pad_samples_;
         if (return_relative) {
-          speech_end = current_sample_ - speech_end;
+          *speech_end = current_sample_ - *speech_end;
         }
         if (return_seconds) {
-          speech_end = round(speech_end / sample_rate_ * 1000) / 1000;
+          *speech_end = round(*speech_end / sample_rate_ * 1000) / 1000;
         }
         temp_end_ = 0;
         on_speech_ = false;
-        end_pos->emplace_back(speech_end);
       }
     }
   }
