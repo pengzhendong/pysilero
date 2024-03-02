@@ -28,16 +28,17 @@
 class Denoiser {
  public:
   explicit Denoiser() {
-    st_.reset(rnnoise_create());
+    st_ = rnnoise_create();
     sample_queue_ = std::make_shared<SampleQueue>();
   };
+  ~Denoiser() { rnnoise_destroy(st_); };
 
   void Reset() { sample_queue_->Clear(); };
 
   void Denoise(const std::vector<float>& in_pcm, std::vector<float>* out_pcm);
 
  private:
-  std::shared_ptr<DenoiseState> st_ = nullptr;
+  DenoiseState* st_ = nullptr;
   std::shared_ptr<SampleQueue> sample_queue_ = nullptr;
 };
 

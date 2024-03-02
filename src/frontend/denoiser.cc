@@ -27,6 +27,6 @@ void Denoiser::Denoise(const std::vector<float>& in_pcm,
   for (int i = 0; i < num_frames; i++) {
     float* in_frames = input_pcm.data() + i * FRAME_SIZE;
     float* out_frames = out_pcm->data() + i * FRAME_SIZE;
-    rnnoise_process_frame(st_.get(), out_frames, in_frames);
+    rnnoise_process_frame(st_, out_frames, in_frames);
   }
 }

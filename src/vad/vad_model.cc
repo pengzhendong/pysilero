@@ -1,5 +1,8 @@
 #include "vad/vad_model.h"
 
+#include <cmath>
+#include <cstring>
+
 #include "glog/logging.h"
 
 VadModel::VadModel(const std::string& model_path, bool denoise, int sample_rate,

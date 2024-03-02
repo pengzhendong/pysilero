@@ -31,6 +31,7 @@ include(rnnoise)
 include(onnx)
 
 add_subdirectory(frontend)
+add_dependencies(frontend RnNoise)
 add_subdirectory(vad)
 add_executable(vad_main bin/vad_main.cc)
 target_link_libraries(vad_main PUBLIC vad gflags)
