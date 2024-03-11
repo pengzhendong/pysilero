@@ -8,9 +8,9 @@ See [RnNoise](https://github.com/werman/noise-suppression-for-voice).
 
 ### Python Usage
 
-``` bash
+```bash
 $ pip install https://github.com/pengzhendong/silero-vad/archive/refs/heads/master.zip
-$ silero_vad --wav audio.wav
+$ silero_vad --wav_path audio.wav
 $ python
 >>> from silero_vad import vad
 >>> model = vad.OnnxWrapper()
