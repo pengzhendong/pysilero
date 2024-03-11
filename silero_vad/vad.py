@@ -1,13 +1,23 @@
-from importlib_resources import files
+import os
+import logging
+
 import librosa
 import numpy as np
 import onnxruntime as ort
+import soundfile as sf
 import warnings
+
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+dirname = os.path.dirname(__file__)
 
 
 class OnnxWrapper:
     def __init__(self, path=None):
-        path = path or str(files("silero_vad").joinpath("silero_vad.onnx"))
+        path = path or f"{dirname}/silero_vad.onnx"
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
@@ -320,24 +330,49 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--wav", required=True, help="input wav path")
     parser.add_argument("--onnx_model", help="silero vad onnx model path")
+    parser.add_argument("--streaming", default=False, help="streaming mode")
+    parser.add_argument("--output_dir", help="output dir for the wav segments")
+    parser.add_argument("--output_sr", help="output sample rate")
     args = parser.parse_args()
 
     model = OnnxWrapper(args.onnx_model)
-    speech_timestamps = get_speech_timestamps(model, args.wav, return_seconds=True)
-    print("None streaming result:", speech_timestamps)
 
-    print("Streaming result:", end=" ")
-    vad_iterator = VADIterator(model)
-    wav, _ = librosa.load(args.wav, sr=None)
-    window_size_samples = 512  # number of samples in a single audio chunk
-    for i in range(0, len(wav), window_size_samples):
-        chunk = wav[i : i + window_size_samples]
-        if len(chunk) < window_size_samples:
-            break
-        speech_dict = vad_iterator(chunk, return_seconds=True)
-        if speech_dict:
-            print(speech_dict, end=" ")
-    vad_iterator.reset_states()  # reset model states after each audio
+    if not args.streaming:
+        speech_timestamps = get_speech_timestamps(
+            model,
+            args.wav,
+            min_silence_duration_ms=200,
+            speech_pad_ms=100,
+            return_seconds=True,
+        )
+        print("None streaming result:", speech_timestamps)
+        if args.output_dir:
+            if not os.path.exists(args.output_dir):
+                os.makedirs(args.output_dir)
+            sr = int(args.output_sr) if args.output_sr else None
+            wav, sr = librosa.load(args.wav, sr=sr)
+            for i, speech_dict in enumerate(speech_timestamps):
+                start = int(speech_dict["start"] * sr)
+                end = int(speech_dict["end"] * sr)
+                sf.write(
+                    f"{args.output_dir}/{os.path.basename(args.wav)}_{i}.wav",
+                    wav[start:end],
+                    sr,
+                )
+        logging.info("Wav segments are saved in %s.", args.output_dir)
+    else:
+        print("Streaming result:", end=" ")
+        wav, sr = librosa.load(args.wav, sr=None)
+        vad_iterator = VADIterator(model, sampling_rate=sr)
+        window_size_samples = 512  # number of samples in a single audio chunk
+        for i in range(0, len(wav), window_size_samples):
+            chunk = wav[i : i + window_size_samples]
+            if len(chunk) < window_size_samples:
+                break
+            speech_dict = vad_iterator(chunk, return_seconds=True)
+            if speech_dict:
+                print(speech_dict, end=" ")
+        vad_iterator.reset_states()  # reset model states after each audio
 
 
 if __name__ == "__main__":
