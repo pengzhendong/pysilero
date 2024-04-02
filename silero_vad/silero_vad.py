@@ -1,22 +1,32 @@
+# Copyright (c) 2024, Zhendong Peng (pzd17@tsinghua.org.cn)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 from pathlib import Path
 from typing import Union
 
-import click
 import librosa
 import numpy as np
-import onnxruntime as ort
 import soundfile as sf
 from loguru import logger
+
+from .inference_session import PickableInferenceSession
 
 
 class SileroVAD:
     def __init__(self, onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
-        opts = ort.SessionOptions()
-        opts.inter_op_num_threads = 1
-        opts.intra_op_num_threads = 1
-        opts.log_severity_level = 3
-        self.session = ort.InferenceSession(onnx_model, sess_options=opts)
+        self.session = PickableInferenceSession(onnx_model)
         self.reset_states()
         self.sample_rates = [8000, 16000]
 
@@ -91,7 +101,7 @@ class SileroVAD:
             based on return_seconds)
         """
 
-        wav_path, save_path = Path(wav_path), Path(save_path)
+        wav_path = Path(wav_path)
         original_sr = librosa.get_samplerate(wav_path)
         if original_sr in self.sample_rates:
             step = 1
@@ -244,6 +254,7 @@ class SileroVAD:
                 speech_dict["start"] = int(speech_dict["start"] * step)
                 speech_dict["end"] = int(speech_dict["end"] * step)
             if save_path:
+                save_path = Path(save_path)
                 segment = wav[speech_dict["start"] : speech_dict["end"]]
                 if flat_layout:
                     sf.write(str(save_path) + f"_{idx:04d}.wav", segment, sr)
@@ -341,35 +352,3 @@ class VADIterator:
                 self.triggered = False
                 return {"end": speech_end}
         return None
-
-
-@click.command()
-@click.argument("wav_path", type=click.Path(exists=True, file_okay=True))
-@click.option("--streaming/--no-streaming", default=False, help="Streming mode")
-def main(wav_path: str, streaming: bool):
-    if not streaming:
-        vad = SileroVAD()
-        speech_timestamps = vad.get_speech_timestamps(
-            wav_path,
-            min_silence_duration_ms=100,
-            speech_pad_ms=30,
-            return_seconds=True,
-        )
-        print("None streaming result:", speech_timestamps)
-    else:
-        print("Streaming result:", end=" ")
-        wav, sr = librosa.load(wav_path, sr=None)
-        vad_iterator = VADIterator(sampling_rate=sr)
-        window_size_samples = 512  # number of samples in a single audio chunk
-        for i in range(0, len(wav), window_size_samples):
-            chunk = wav[i : i + window_size_samples]
-            if len(chunk) < window_size_samples:
-                break
-            speech_dict = vad_iterator(chunk, return_seconds=True)
-            if speech_dict:
-                print(speech_dict, end=" ")
-        vad_iterator.reset_states()  # reset model states after each audio
-
-
-if __name__ == "__main__":
-    main()
