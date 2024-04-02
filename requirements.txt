@@ -1,4 +1,6 @@
+click
 librosa
+loguru
 numpy
 onnxruntime
 soundfile
