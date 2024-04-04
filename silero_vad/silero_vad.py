@@ -48,6 +48,8 @@ class SileroVAD:
     def get_speech_timestamps(
         self,
         wav_path: Union[str, Path],
+        save_path: Union[str, Path] = None,
+        flat_layout: bool = True,
         threshold: float = 0.5,
         min_speech_duration_ms: int = 250,
         max_speech_duration_s: float = float("inf"),
@@ -55,8 +57,6 @@ class SileroVAD:
         speech_pad_ms: int = 30,
         window_size_samples: int = 512,
         return_seconds: bool = False,
-        save_path: Union[str, Path] = None,
-        flat_layout: bool = True,
     ):
         """
         Splitting long audios into speech chunks using silero VAD
@@ -64,6 +64,10 @@ class SileroVAD:
         Parameters
         ----------
         wav_path: wav path
+        save_path: string or Path (default - None)
+            whether the save speech segments
+        flat_layout: bool (default - True)
+            whether use the flat directory structure
         threshold: float (default - 0.5)
             Speech threshold. Silero VAD outputs speech probabilities for each audio
             chunk, probabilities ABOVE this value are considered as SPEECH. It is
@@ -89,10 +93,6 @@ class SileroVAD:
             Values other than these may affect model perfomance!!
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
-        save_path: string or Path (default - None)
-            whether the save speech segments
-        flat_layout: bool (default - True)
-            whether use the flat directory structure
 
         Returns
         ----------
