@@ -29,7 +29,7 @@ def main(wav_path: str, streaming: bool):
             speech_pad_ms=30,
             return_seconds=True,
         )
-        print("None streaming result:", speech_timestamps)
+        print("None streaming result:", list(speech_timestamps))
     else:
         print("Streaming result:", end=" ")
         wav, sr = librosa.load(wav_path, sr=None)

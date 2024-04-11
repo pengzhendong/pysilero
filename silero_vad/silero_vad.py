@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from functools import partial
 from pathlib import Path
 from typing import Union
 
@@ -44,6 +45,36 @@ class SileroVAD:
         ort_outs = self.session.run(None, ort_inputs)
         out, self._h, self._c = ort_outs
         return out
+
+    def process_segment(
+        self,
+        idx,
+        segment,
+        wav,
+        sample_rate,
+        step,
+        save_path,
+        flat_layout,
+        speech_pad_ms,
+        return_seconds,
+    ):
+        if step != 1.0:
+            segment["start"] = int(segment["start"] * step)
+            segment["end"] = int(segment["end"] * step)
+
+        speech_pad_samples = speech_pad_ms * sample_rate // 1000
+        segment["start"] = max(segment["start"] - speech_pad_samples, 0)
+        segment["end"] = min(segment["end"] + speech_pad_samples, len(wav))
+        if save_path:
+            wav = wav[segment["start"] : segment["end"]]
+            if flat_layout:
+                sf.write(str(save_path) + f"_{idx:04d}.wav", wav, sample_rate)
+            else:
+                sf.write(str(Path(save_path) / f"{idx:04d}.wav"), wav, sample_rate)
+        if return_seconds:
+            segment["start"] = round(segment["start"] / sample_rate, 3)
+            segment["end"] = round(segment["end"] / sample_rate, 3)
+        return segment
 
     def get_speech_timestamps(
         self,
@@ -103,12 +134,26 @@ class SileroVAD:
 
         wav_path = Path(wav_path)
         original_sr = librosa.get_samplerate(wav_path)
+        original_wav, _ = librosa.load(wav_path, sr=original_sr)
         if original_sr in self.sample_rates:
-            step = 1
-            wav, sr = librosa.load(wav_path, sr=original_sr)
+            step = 1.0
+            wav, sr = original_wav, original_sr
         else:
             step = original_sr / 16000
             wav, sr = librosa.load(wav_path, sr=16000)
+
+        fn = partial(
+            self.process_segment,
+            wav=original_wav,
+            sample_rate=original_sr,
+            step=step,
+            save_path=save_path,
+            flat_layout=flat_layout,
+            speech_pad_ms=speech_pad_ms,
+            return_seconds=return_seconds,
+        )
+
+
         if len(wav.shape) > 1:
             raise ValueError(
                 "More than one dimension in audio."
@@ -127,13 +172,13 @@ class SileroVAD:
                 "window_size_samples is too big for 8k sampling rate!"
                 "Better set window_size_samples to 256, 512 or 768 for 8k sample rate!"
             )
-        min_speech_samples = sr * min_speech_duration_ms / 1000
-        speech_pad_samples = sr * speech_pad_ms / 1000
+        speech_pad_samples = sr * speech_pad_ms // 1000
+        min_speech_samples = sr * min_speech_duration_ms // 1000
         max_speech_samples = (
             sr * max_speech_duration_s - window_size_samples - 2 * speech_pad_samples
         )
-        min_silence_samples = sr * min_silence_duration_ms / 1000
-        min_silence_samples_at_max_speech = sr * 98 / 1000
+        min_silence_samples = sr * min_silence_duration_ms // 1000
+        min_silence_samples_at_max_speech = sr * 98 // 1000
 
         self.reset_states()
         num_samples = len(wav)
@@ -147,7 +192,7 @@ class SileroVAD:
             speech_prob = self(chunk[np.newaxis, :], sr)
             speech_probs.append(speech_prob)
 
-        speeches = []
+        idx = 0
         current_speech = {}
         neg_threshold = threshold - 0.15
         triggered = False
@@ -175,7 +220,8 @@ class SileroVAD:
                 # prev_end larger than 0 means there is a short silence in the middle avoid aggressive cutting
                 if prev_end > 0:
                     current_speech["end"] = prev_end
-                    speeches.append(current_speech)
+                    yield fn(idx, current_speech)
+                    idx += 1
                     current_speech = {}
                     # previously reached silence (< neg_thres) and is still not speech (< thres)
                     if next_start < prev_end:
@@ -187,7 +233,8 @@ class SileroVAD:
                     temp_end = 0
                 else:
                     current_speech["end"] = current_samples
-                    speeches.append(current_speech)
+                    yield fn(idx, current_speech)
+                    idx += 1
                     current_speech = {}
                     prev_end = 0
                     next_start = 0
@@ -208,7 +255,8 @@ class SileroVAD:
                         current_speech["end"] - current_speech["start"]
                         > min_speech_samples
                     ):
-                        speeches.append(current_speech)
+                        yield fn(idx, current_speech)
+                        idx += 1
                     current_speech = {}
                     prev_end = 0
                     next_start = 0
@@ -221,50 +269,8 @@ class SileroVAD:
             and num_samples - current_speech["start"] > min_speech_samples
         ):
             current_speech["end"] = num_samples
-            speeches.append(current_speech)
-
-        # padding each speech segment
-        for i, speech in enumerate(speeches):
-            if i == 0:
-                speech["start"] = int(max(0, speech["start"] - speech_pad_samples))
-            if i != len(speeches) - 1:
-                silence_duration = speeches[i + 1]["start"] - speech["end"]
-                if silence_duration < 2 * speech_pad_samples:
-                    speech["end"] += int(silence_duration // 2)
-                    speeches[i + 1]["start"] = int(
-                        max(0, speeches[i + 1]["start"] - silence_duration // 2)
-                    )
-                else:
-                    speech["end"] = int(
-                        min(num_samples, speech["end"] + speech_pad_samples)
-                    )
-                    speeches[i + 1]["start"] = int(
-                        max(0, speeches[i + 1]["start"] - speech_pad_samples)
-                    )
-            else:
-                speech["end"] = int(
-                    min(num_samples, speech["end"] + speech_pad_samples)
-                )
-
-        if step != 1.0:
-            # reload without resampling
-            wav, sr = librosa.load(wav_path, sr=original_sr)
-        for idx, speech_dict in enumerate(speeches):
-            if step != 1.0:
-                speech_dict["start"] = int(speech_dict["start"] * step)
-                speech_dict["end"] = int(speech_dict["end"] * step)
-            if save_path:
-                save_path = Path(save_path)
-                segment = wav[speech_dict["start"] : speech_dict["end"]]
-                if flat_layout:
-                    sf.write(str(save_path) + f"_{idx:04d}.wav", segment, sr)
-                else:
-                    sf.write(str(save_path / f"{idx:04d}.wav"), segment, sr)
-            if return_seconds:
-                speech_dict["start"] = round(speech_dict["start"] / sr, 3)
-                speech_dict["end"] = round(speech_dict["end"] / sr, 3)
-
-        return speeches
+            yield fn(idx, current_speech)
+            idx += 1
 
 
 class VADIterator:
