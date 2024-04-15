@@ -37,7 +37,7 @@ class SileroVAD:
 
     def __call__(self, x, sr: int):
         ort_inputs = {
-            "input": x,
+            "input": x[np.newaxis, :],
             "h": self._h,
             "c": self._c,
             "sr": np.array(sr, dtype="int64"),
@@ -189,7 +189,7 @@ class SileroVAD:
             ]
             if len(chunk) < window_size_samples:
                 chunk = np.pad(chunk, (0, int(window_size_samples - len(chunk))))
-            speech_prob = self(chunk[np.newaxis, :], sr)
+            speech_prob = self(chunk, sr)
             speech_probs.append(speech_prob)
 
         idx = 0
@@ -330,7 +330,7 @@ class VADIterator:
 
         window_size_samples = len(x)
         self.current_sample += window_size_samples
-        speech_prob = self.model(x[np.newaxis, :], self.sampling_rate)
+        speech_prob = self.model(x, self.sampling_rate)
 
         if speech_prob >= self.threshold:
             self.temp_end = 0
