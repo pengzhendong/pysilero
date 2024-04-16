@@ -16,13 +16,14 @@ import os
 from functools import partial
 from pathlib import Path
 from typing import Union
+import warnings
 
 import librosa
 import numpy as np
 import soundfile as sf
-from loguru import logger
 
 from .inference_session import PickableInferenceSession
+from .utils import get_energy
 
 
 class SileroVAD:
@@ -133,8 +134,8 @@ class SileroVAD:
         """
 
         wav_path = Path(wav_path)
-        original_sr = librosa.get_samplerate(wav_path)
-        original_wav, _ = librosa.load(wav_path, sr=original_sr)
+        original_sr = sf.info(wav_path).samplerate
+        original_wav, _ = sf.read(wav_path, dtype="float32")
         if original_sr in self.sample_rates:
             step = 1.0
             wav, sr = original_wav, original_sr
@@ -153,7 +154,6 @@ class SileroVAD:
             return_seconds=return_seconds,
         )
 
-
         if len(wav.shape) > 1:
             raise ValueError(
                 "More than one dimension in audio."
@@ -162,13 +162,13 @@ class SileroVAD:
         if sr / len(wav) > 31.25:
             raise ValueError("Input audio is too short.")
         if window_size_samples not in [256, 512, 768, 1024, 1536]:
-            logger.warning(
+            warnings.warn(
                 "Unusual window_size_samples! Supported window_size_samples:"
                 "\n - [512, 1024, 1536] for 16k sampling_rate"
                 "\n - [256, 512, 768] for 8k sampling_rate"
             )
         if sr == 8000 and window_size_samples > 768:
-            logger.warning(
+            warnings.warn(
                 "window_size_samples is too big for 8k sampling rate!"
                 "Better set window_size_samples to 256, 512 or 768 for 8k sample rate!"
             )
@@ -182,15 +182,6 @@ class SileroVAD:
 
         self.reset_states()
         num_samples = len(wav)
-        speech_probs = []
-        for current_start_sample in range(0, num_samples, window_size_samples):
-            chunk = wav[
-                current_start_sample : current_start_sample + window_size_samples
-            ]
-            if len(chunk) < window_size_samples:
-                chunk = np.pad(chunk, (0, int(window_size_samples - len(chunk))))
-            speech_prob = self(chunk, sr)
-            speech_probs.append(speech_prob)
 
         idx = 0
         current_speech = {}
@@ -201,8 +192,12 @@ class SileroVAD:
         # to save potential segment limits in case of maximum segment size reached
         prev_end = 0
         next_start = 0
-        for i, speech_prob in enumerate(speech_probs):
-            current_samples = window_size_samples * i
+        for current_samples in range(0, num_samples, window_size_samples):
+            chunk = wav[current_samples : current_samples + window_size_samples]
+            if len(chunk) < window_size_samples:
+                chunk = np.pad(chunk, (0, int(window_size_samples - len(chunk))))
+            speech_prob = self(chunk, sr)
+
             # current frame is speech
             if speech_prob >= threshold:
                 if temp_end > 0 and next_start < prev_end:
@@ -331,6 +326,10 @@ class VADIterator:
         window_size_samples = len(x)
         self.current_sample += window_size_samples
         speech_prob = self.model(x, self.sampling_rate)
+        # Suppress background vocals by harmonic energy
+        # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
+        # if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
+        #     speech_prob = 0
 
         if speech_prob >= self.threshold:
             self.temp_end = 0

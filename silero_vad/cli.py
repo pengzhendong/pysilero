@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import click
-import librosa
+import soundfile as sf
 
 from silero_vad import SileroVAD, VADIterator
+
 
 @click.command()
 @click.argument("wav_path", type=click.Path(exists=True, file_okay=True))
@@ -25,16 +26,19 @@ def main(wav_path: str, streaming: bool):
         vad = SileroVAD()
         speech_timestamps = vad.get_speech_timestamps(
             wav_path,
-            min_silence_duration_ms=100,
-            speech_pad_ms=30,
+            min_silence_duration_ms=300,
+            speech_pad_ms=100,
             return_seconds=True,
         )
         print("None streaming result:", list(speech_timestamps))
     else:
         print("Streaming result:", end=" ")
-        wav, sr = librosa.load(wav_path, sr=None)
-        vad_iterator = VADIterator(sampling_rate=sr)
-        window_size_samples = 512  # number of samples in a single audio chunk
+        wav, sr = sf.read(wav_path, dtype="float32")
+        vad_iterator = VADIterator(
+            min_silence_duration_ms=300, speech_pad_ms=100, sampling_rate=sr
+        )
+        # number of samples in a single audio chunk
+        window_size_samples = 512
         for i in range(0, len(wav), window_size_samples):
             chunk = wav[i : i + window_size_samples]
             if len(chunk) < window_size_samples:
@@ -42,7 +46,8 @@ def main(wav_path: str, streaming: bool):
             speech_dict = vad_iterator(chunk, return_seconds=True)
             if speech_dict:
                 print(speech_dict, end=" ")
-        vad_iterator.reset_states()  # reset model states after each audio
+        # reset model states after each audio
+        vad_iterator.reset_states()
 
 
 if __name__ == "__main__":

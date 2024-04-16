@@ -38,7 +38,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "silero_vad = main:main",
+            "silero_vad = silero_vad.cli:main",
         ]
     },
     classifiers=[

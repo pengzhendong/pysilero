@@ -1,6 +1,4 @@
-click
 librosa
-loguru
 numpy
 onnxruntime
-soundfile
+praat-parselmouth
