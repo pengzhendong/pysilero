@@ -87,7 +87,7 @@ class SileroVAD:
         max_speech_duration_s: float = float("inf"),
         min_silence_duration_ms: int = 100,
         speech_pad_ms: int = 30,
-        window_size_samples: int = 512,
+        window_size_ms: int = 32,
         return_seconds: bool = False,
     ):
         """
@@ -118,10 +118,10 @@ class SileroVAD:
             separating it.
         speech_pad_ms: int (default - 30 milliseconds)
             Final speech chunks are padded by speech_pad_ms each side
-        window_size_samples: int (default - 1536 samples)
-            Audio chunks of window_size_samples size are fed to the silero VAD model.
-            WARNING! Silero VAD models were trained using 512, 1024, 1536 samples
-            for 16000 sample rate and 256, 512, 768 samples for 8000 sample rate.
+        window_size_ms: int (default - 32 milliseconds)
+            Audio chunks of window_size_ms size are fed to the silero VAD model.
+            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
+            for 8000 sample rate and 16000 sample rate.
             Values other than these may affect model perfomance!!
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
@@ -155,27 +155,19 @@ class SileroVAD:
         )
 
         if len(wav.shape) > 1:
-            raise ValueError(
-                "More than one dimension in audio."
-                "Are you trying to process audio with 2 channels?"
-            )
-        if sr / len(wav) > 31.25:
+            raise ValueError("Only supported mono wav.")
+        if len(wav) / sr * 1000 < 32:
             raise ValueError("Input audio is too short.")
-        if window_size_samples not in [256, 512, 768, 1024, 1536]:
+        if window_size_ms not in [32, 64, 96]:
             warnings.warn(
-                "Unusual window_size_samples! Supported window_size_samples:"
-                "\n - [512, 1024, 1536] for 16k sampling_rate"
-                "\n - [256, 512, 768] for 8k sampling_rate"
+                "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
             )
-        if sr == 8000 and window_size_samples > 768:
-            warnings.warn(
-                "window_size_samples is too big for 8k sampling rate!"
-                "Better set window_size_samples to 256, 512 or 768 for 8k sample rate!"
-            )
+        max_speech_duration_samples = sr * max_speech_duration_s
+        window_size_samples = sr * window_size_ms // 1000
         speech_pad_samples = sr * speech_pad_ms // 1000
         min_speech_samples = sr * min_speech_duration_ms // 1000
         max_speech_samples = (
-            sr * max_speech_duration_s - window_size_samples - 2 * speech_pad_samples
+            max_speech_duration_samples - window_size_samples - 2 * speech_pad_samples
         )
         min_silence_samples = sr * min_silence_duration_ms // 1000
         min_silence_samples_at_max_speech = sr * 98 // 1000
@@ -303,8 +295,8 @@ class VADIterator:
 
         self.threshold = threshold
         self.sampling_rate = sampling_rate
-        self.min_silence_samples = sampling_rate * min_silence_duration_ms / 1000
-        self.speech_pad_samples = sampling_rate * speech_pad_ms / 1000
+        self.min_silence_samples = sampling_rate * min_silence_duration_ms // 1000
+        self.speech_pad_samples = sampling_rate * speech_pad_ms // 1000
         self.reset_states()
 
     def reset_states(self):

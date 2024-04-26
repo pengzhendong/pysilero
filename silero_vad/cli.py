@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import click
+import numpy as np
 import soundfile as sf
+import soxr
 
 from silero_vad import SileroVAD, VADIterator
 
@@ -33,12 +35,13 @@ def main(wav_path: str, streaming: bool):
         print("None streaming result:", list(speech_timestamps))
     else:
         print("Streaming result:", end=" ")
-        wav, sr = sf.read(wav_path, dtype="float32")
+        wav, sr = sf.read(wav_path, dtype=np.float32)
         vad_iterator = VADIterator(
             min_silence_duration_ms=300, speech_pad_ms=100, sampling_rate=sr
         )
         # number of samples in a single audio chunk
-        window_size_samples = 512
+        window_size_samples = 32 * sr // 1000
+
         for i in range(0, len(wav), window_size_samples):
             chunk = wav[i : i + window_size_samples]
             if len(chunk) < window_size_samples:

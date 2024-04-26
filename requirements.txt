@@ -1,4 +1,5 @@
 librosa
 numpy
 onnxruntime
+soxr
 praat-parselmouth
