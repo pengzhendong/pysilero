@@ -299,9 +299,10 @@ class VADIterator:
             warnings.warn(
                 "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
             )
+        self.resampler = None
         if sampling_rate not in self.model.sample_rates:
             self.resampler = soxr.ResampleStream(
-                sampling_rate, 16000, 1, dtype=np.int16
+                sampling_rate, 16000, 1, dtype=np.float32
             )
             sampling_rate = 16000
         self.threshold = threshold
@@ -318,21 +319,24 @@ class VADIterator:
         self.current_sample = 0
         self.remained_samples = np.empty(0, dtype=np.float32)
 
-    def __call__(self, x, return_seconds=False):
+    def __call__(self, chunk, return_seconds=False):
         """
-        x: audio chunk
+        chunk: audio chunk
 
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
 
-        self.remained_samples = np.concatenate((self.remained_samples, x), axis=0)
+        if self.resampler:
+            chunk = self.resampler.resample_chunk(chunk)
+        self.remained_samples = np.concatenate((self.remained_samples, chunk), axis=0)
         if self.remained_samples.shape[0] < self.window_size_samples:
             return
-        x = self.remained_samples[: self.window_size_samples]
+
+        chunk = self.remained_samples[: self.window_size_samples]
         self.remained_samples = self.remained_samples[self.window_size_samples :]
         self.current_sample += self.window_size_samples
-        speech_prob = self.model(x, self.sampling_rate)
+        speech_prob = self.model(chunk, self.sampling_rate)
         # Suppress background vocals by harmonic energy
         # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
         # if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
