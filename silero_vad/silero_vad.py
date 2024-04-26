@@ -21,6 +21,7 @@ import warnings
 import librosa
 import numpy as np
 import soundfile as sf
+import soxr
 
 from .inference_session import PickableInferenceSession
 from .utils import get_energy
@@ -113,10 +114,10 @@ class SileroVAD:
             of the last silence that lasts more than 98ms (if any), to prevent
             agressive cutting. Otherwise, they will be split aggressively just
             before max_speech_duration_s.
-        min_silence_duration_ms: int (default - 100 milliseconds)
+        min_silence_duration_ms: int (default - 300 milliseconds)
             In the end of each speech chunk wait for min_silence_duration_ms before
             separating it.
-        speech_pad_ms: int (default - 30 milliseconds)
+        speech_pad_ms: int (default - 100 milliseconds)
             Final speech chunks are padded by speech_pad_ms each side
         window_size_ms: int (default - 32 milliseconds)
             Audio chunks of window_size_ms size are fed to the silero VAD model.
@@ -162,15 +163,15 @@ class SileroVAD:
             warnings.warn(
                 "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
             )
-        max_speech_duration_samples = sr * max_speech_duration_s
-        window_size_samples = sr * window_size_ms // 1000
-        speech_pad_samples = sr * speech_pad_ms // 1000
-        min_speech_samples = sr * min_speech_duration_ms // 1000
+        speech_pad_samples = speech_pad_ms * sr // 1000
+        window_size_samples = window_size_ms * sr // 1000
+        min_silence_samples_at_max_speech = 98 * sr // 1000
+        min_speech_samples = min_speech_duration_ms * sr // 1000
+        min_silence_samples = min_silence_duration_ms * sr // 1000
+        max_speech_duration_samples = max_speech_duration_s * sr
         max_speech_samples = (
             max_speech_duration_samples - window_size_samples - 2 * speech_pad_samples
         )
-        min_silence_samples = sr * min_silence_duration_ms // 1000
-        min_silence_samples_at_max_speech = sr * 98 // 1000
 
         self.reset_states()
         num_samples = len(wav)
@@ -265,8 +266,9 @@ class VADIterator:
         self,
         threshold: float = 0.5,
         sampling_rate: int = 16000,
-        min_silence_duration_ms: int = 100,
-        speech_pad_ms: int = 30,
+        min_silence_duration_ms: int = 300,
+        speech_pad_ms: int = 100,
+        window_size_ms: int = 32,
     ):
         """
         Class for stream imitation
@@ -280,23 +282,33 @@ class VADIterator:
             "lazy" 0.5 is pretty good for most datasets.
         sampling_rate: int (default - 16000)
             Currently silero VAD models support 8000 and 16000 sample rates
-        min_silence_duration_ms: int (default - 100 milliseconds)
+        min_silence_duration_ms: int (default - 300 milliseconds)
             In the end of each speech chunk wait for min_silence_duration_ms
             before separating it
-        speech_pad_ms: int (default - 30 milliseconds)
+        speech_pad_ms: int (default - 100 milliseconds)
             Final speech chunks are padded by speech_pad_ms each side
+        window_size_ms: int (default - 32 milliseconds)
+            Audio chunks of window_size_ms size are fed to the silero VAD model.
+            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
+            for 8000 sample rate and 16000 sample rate.
+            Values other than these may affect model perfomance!!
         """
 
         self.model = SileroVAD()
-        if sampling_rate not in self.model.sample_rates:
-            raise ValueError(
-                "VADIterator does not support sampling rates other than [8k, 16k]"
+        if window_size_ms not in [32, 64, 96]:
+            warnings.warn(
+                "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
             )
-
+        if sampling_rate not in self.model.sample_rates:
+            self.resampler = soxr.ResampleStream(
+                sampling_rate, 16000, 1, dtype=np.int16
+            )
+            sampling_rate = 16000
         self.threshold = threshold
         self.sampling_rate = sampling_rate
+        self.speech_pad_samples = speech_pad_ms * sampling_rate // 1000
+        self.window_size_samples = window_size_ms * sampling_rate // 1000
         self.min_silence_samples = sampling_rate * min_silence_duration_ms // 1000
-        self.speech_pad_samples = sampling_rate * speech_pad_ms // 1000
         self.reset_states()
 
     def reset_states(self):
@@ -304,19 +316,22 @@ class VADIterator:
         self.triggered = False
         self.temp_end = 0
         self.current_sample = 0
+        self.remained_samples = np.empty(0, dtype=np.float32)
 
-    def __call__(self, x, return_relative=False, return_seconds=False):
+    def __call__(self, x, return_seconds=False):
         """
         x: audio chunk
 
-        return_relative: bool (default - False)
-            whether return timestamps relative to the current audio chunk
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
 
-        window_size_samples = len(x)
-        self.current_sample += window_size_samples
+        self.remained_samples = np.concatenate((self.remained_samples, x), axis=0)
+        if self.remained_samples.shape[0] < self.window_size_samples:
+            return
+        x = self.remained_samples[: self.window_size_samples]
+        self.remained_samples = self.remained_samples[self.window_size_samples :]
+        self.current_sample += self.window_size_samples
         speech_prob = self.model(x, self.sampling_rate)
         # Suppress background vocals by harmonic energy
         # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
@@ -329,23 +344,22 @@ class VADIterator:
             if not self.triggered:
                 self.triggered = True
                 speech_start = (
-                    self.current_sample - window_size_samples - self.speech_pad_samples
+                    self.current_sample
+                    - self.window_size_samples
+                    - self.speech_pad_samples
                 )
-                if return_relative:
-                    speech_start = self.current_sample - speech_start
                 if return_seconds:
                     speech_start = round(speech_start / self.sampling_rate, 3)
                 return {"start": speech_start}
+
         if speech_prob < self.threshold - 0.15 and self.triggered:
             if not self.temp_end:
                 self.temp_end = self.current_sample
             if self.current_sample - self.temp_end >= self.min_silence_samples:
                 speech_end = self.temp_end + self.speech_pad_samples
-                if return_relative:
-                    speech_end = self.current_sample - speech_end
                 if return_seconds:
                     speech_end = round(speech_end / self.sampling_rate, 3)
                 self.temp_end = 0
                 self.triggered = False
                 return {"end": speech_end}
-        return None
+        return

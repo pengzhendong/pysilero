@@ -26,26 +26,17 @@ from silero_vad import SileroVAD, VADIterator
 def main(wav_path: str, streaming: bool):
     if not streaming:
         vad = SileroVAD()
-        speech_timestamps = vad.get_speech_timestamps(
-            wav_path,
-            min_silence_duration_ms=300,
-            speech_pad_ms=100,
-            return_seconds=True,
-        )
+        speech_timestamps = vad.get_speech_timestamps(wav_path, return_seconds=True)
         print("None streaming result:", list(speech_timestamps))
     else:
         print("Streaming result:", end=" ")
         wav, sr = sf.read(wav_path, dtype=np.float32)
-        vad_iterator = VADIterator(
-            min_silence_duration_ms=300, speech_pad_ms=100, sampling_rate=sr
-        )
+        vad_iterator = VADIterator(sampling_rate=sr)
         # number of samples in a single audio chunk
-        window_size_samples = 32 * sr // 1000
+        window_size_samples = 10 * sr // 1000
 
         for i in range(0, len(wav), window_size_samples):
             chunk = wav[i : i + window_size_samples]
-            if len(chunk) < window_size_samples:
-                break
             speech_dict = vad_iterator(chunk, return_seconds=True)
             if speech_dict:
                 print(speech_dict, end=" ")
