@@ -18,11 +18,10 @@ from pathlib import Path
 from typing import Union
 import warnings
 
-import librosa
 import numpy as np
 import soundfile as sf
-import soxr
 
+from .frame_queue import FrameQueue
 from .inference_session import PickableInferenceSession
 from .utils import get_energy
 
@@ -34,22 +33,22 @@ class SileroVAD:
         self.sample_rates = [8000, 16000]
 
     def reset_states(self):
-        self._h = np.zeros((2, 1, 64)).astype("float32")
-        self._c = np.zeros((2, 1, 64)).astype("float32")
+        self._h = np.zeros((2, 1, 64)).astype(np.float32)
+        self._c = np.zeros((2, 1, 64)).astype(np.float32)
 
     def __call__(self, x, sr: int):
         ort_inputs = {
             "input": x[np.newaxis, :],
             "h": self._h,
             "c": self._c,
-            "sr": np.array(sr, dtype="int64"),
+            "sr": np.array(sr, dtype=np.int64),
         }
         ort_outs = self.session.run(None, ort_inputs)
         out, self._h, self._c = ort_outs
         return out
 
+    @staticmethod
     def process_segment(
-        self,
         idx,
         segment,
         wav,
@@ -134,47 +133,39 @@ class SileroVAD:
             based on return_seconds)
         """
 
-        wav_path = Path(wav_path)
-        original_sr = sf.info(wav_path).samplerate
-        original_wav, _ = sf.read(wav_path, dtype="float32")
-        if original_sr in self.sample_rates:
-            step = 1.0
-            wav, sr = original_wav, original_sr
+        wav, sr = sf.read(Path(wav_path), dtype=np.float32)
+        if len(wav.shape) > 1:
+            raise ValueError("Only supported mono wav.")
+        if len(wav) / sr * 1000 < 32:
+            raise ValueError("Input audio is too short.")
+        if window_size_ms not in [32, 64, 96]:
+            warnings.warn("Supported window_size_ms: [32, 64, 96]")
+
+        if sr in self.sample_rates:
+            vad_sr = sr
+            queue = FrameQueue(window_size_ms, sr)
         else:
-            step = original_sr / 16000
-            wav, sr = librosa.load(wav_path, sr=16000)
+            vad_sr = 16000
+            queue = FrameQueue(window_size_ms, src_sr=sr, dst_sr=vad_sr)
 
         fn = partial(
             self.process_segment,
-            wav=original_wav,
-            sample_rate=original_sr,
-            step=step,
+            wav=wav,
+            sample_rate=sr,
+            step=queue.step,
             save_path=save_path,
             flat_layout=flat_layout,
             speech_pad_ms=speech_pad_ms,
             return_seconds=return_seconds,
         )
 
-        if len(wav.shape) > 1:
-            raise ValueError("Only supported mono wav.")
-        if len(wav) / sr * 1000 < 32:
-            raise ValueError("Input audio is too short.")
-        if window_size_ms not in [32, 64, 96]:
-            warnings.warn(
-                "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
-            )
-        speech_pad_samples = speech_pad_ms * sr // 1000
-        window_size_samples = window_size_ms * sr // 1000
-        min_silence_samples_at_max_speech = 98 * sr // 1000
-        min_speech_samples = min_speech_duration_ms * sr // 1000
-        min_silence_samples = min_silence_duration_ms * sr // 1000
-        max_speech_duration_samples = max_speech_duration_s * sr
-        max_speech_samples = (
-            max_speech_duration_samples - window_size_samples - 2 * speech_pad_samples
-        )
-
+        speech_pad_samples = speech_pad_ms * vad_sr // 1000
+        min_silence_samples_at_max_speech = 98 * vad_sr // 1000
+        min_speech_samples = min_speech_duration_ms * vad_sr // 1000
+        min_silence_samples = min_silence_duration_ms * vad_sr // 1000
+        max_speech_duration_samples = max_speech_duration_s * vad_sr
+        max_speech_samples = max_speech_duration_samples - 2 * speech_pad_samples
         self.reset_states()
-        num_samples = len(wav)
 
         idx = 0
         current_speech = {}
@@ -185,26 +176,19 @@ class SileroVAD:
         # to save potential segment limits in case of maximum segment size reached
         prev_end = 0
         next_start = 0
-        for current_samples in range(0, num_samples, window_size_samples):
-            chunk = wav[current_samples : current_samples + window_size_samples]
-            if len(chunk) < window_size_samples:
-                chunk = np.pad(chunk, (0, int(window_size_samples - len(chunk))))
-            speech_prob = self(chunk, sr)
-
+        for frame_start, frame_end, frame in queue.add_chunk(wav):
+            speech_prob = self(frame, vad_sr)
             # current frame is speech
             if speech_prob >= threshold:
                 if temp_end > 0 and next_start < prev_end:
-                    next_start = current_samples
+                    next_start = frame_end
                 temp_end = 0
                 if not triggered:
                     triggered = True
-                    current_speech["start"] = current_samples
+                    current_speech["start"] = frame_end
                     continue
             # in speech, and speech duration is more than max speech duration
-            if (
-                triggered
-                and current_samples - current_speech["start"] > max_speech_samples
-            ):
+            if triggered and frame_start - current_speech["start"] > max_speech_samples:
                 # prev_end larger than 0 means there is a short silence in the middle avoid aggressive cutting
                 if prev_end > 0:
                     current_speech["end"] = prev_end
@@ -220,7 +204,7 @@ class SileroVAD:
                     next_start = 0
                     temp_end = 0
                 else:
-                    current_speech["end"] = current_samples
+                    current_speech["end"] = frame_end
                     yield fn(idx, current_speech)
                     idx += 1
                     current_speech = {}
@@ -232,11 +216,11 @@ class SileroVAD:
             # in speech, and current frame is silence
             if triggered and speech_prob < neg_threshold:
                 if temp_end == 0:
-                    temp_end = current_samples
+                    temp_end = frame_end
                 # record the last silence before reaching max speech duration
-                if current_samples - temp_end > min_silence_samples_at_max_speech:
+                if frame_end - temp_end > min_silence_samples_at_max_speech:
                     prev_end = temp_end
-                if current_samples - temp_end >= min_silence_samples:
+                if frame_end - temp_end >= min_silence_samples:
                     current_speech["end"] = temp_end
                     # keep the speech segment if it is longer than min_speech_samples
                     if (
@@ -252,11 +236,8 @@ class SileroVAD:
                     triggered = False
 
         # deal with the last speech segment
-        if (
-            current_speech
-            and num_samples - current_speech["start"] > min_speech_samples
-        ):
-            current_speech["end"] = num_samples
+        if current_speech and len(wav) - current_speech["start"] > min_speech_samples:
+            current_speech["end"] = len(wav)
             yield fn(idx, current_speech)
             idx += 1
 
@@ -296,28 +277,32 @@ class VADIterator:
 
         self.model = SileroVAD()
         if window_size_ms not in [32, 64, 96]:
-            warnings.warn(
-                "Unusual window_size_ms! Supported window_size_ms: [32, 64, 96]"
+            warnings.warn("Supported window_size_ms: [32, 64, 96]")
+
+        if sampling_rate in self.model.sample_rates:
+            self.vad_sr = sampling_rate
+            self.queue = FrameQueue(
+                window_size_ms, sampling_rate, speech_pad_ms=speech_pad_ms
             )
-        self.resampler = None
-        if sampling_rate not in self.model.sample_rates:
-            self.resampler = soxr.ResampleStream(
-                sampling_rate, 16000, 1, dtype=np.float32
+        else:
+            self.vad_sr = 16000
+            self.queue = FrameQueue(
+                window_size_ms,
+                src_sr=sampling_rate,
+                dst_sr=self.vad_sr,
+                speech_pad_ms=speech_pad_ms,
             )
-            sampling_rate = 16000
+
         self.threshold = threshold
-        self.sampling_rate = sampling_rate
-        self.speech_pad_samples = speech_pad_ms * sampling_rate // 1000
-        self.window_size_samples = window_size_ms * sampling_rate // 1000
-        self.min_silence_samples = sampling_rate * min_silence_duration_ms // 1000
+        self.speech_pad_samples = speech_pad_ms * self.vad_sr // 1000
+        self.min_silence_samples = min_silence_duration_ms * self.vad_sr // 1000
         self.reset_states()
 
     def reset_states(self):
         self.model.reset_states()
         self.triggered = False
         self.temp_end = 0
-        self.current_sample = 0
-        self.remained_samples = np.empty(0, dtype=np.float32)
+        self.queue.clear()
 
     def __call__(self, chunk, return_seconds=False):
         """
@@ -327,43 +312,33 @@ class VADIterator:
             whether return timestamps in seconds (default - samples)
         """
 
-        if self.resampler:
-            chunk = self.resampler.resample_chunk(chunk)
-        self.remained_samples = np.concatenate((self.remained_samples, chunk), axis=0)
-        if self.remained_samples.shape[0] < self.window_size_samples:
-            return
+        for frame_start, frame_end, frame in self.queue.add_chunk(chunk):
+            speech_prob = self.model(frame, self.vad_sr)
+            # Suppress background vocals by harmonic energy
+            # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
+            # if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
+            #     speech_prob = 0
 
-        chunk = self.remained_samples[: self.window_size_samples]
-        self.remained_samples = self.remained_samples[self.window_size_samples :]
-        self.current_sample += self.window_size_samples
-        speech_prob = self.model(chunk, self.sampling_rate)
-        # Suppress background vocals by harmonic energy
-        # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
-        # if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
-        #     speech_prob = 0
-
-        if speech_prob >= self.threshold:
-            self.temp_end = 0
-            # triggered = True means the speech has been started
-            if not self.triggered:
-                self.triggered = True
-                speech_start = (
-                    self.current_sample
-                    - self.window_size_samples
-                    - self.speech_pad_samples
-                )
-                if return_seconds:
-                    speech_start = round(speech_start / self.sampling_rate, 3)
-                return {"start": speech_start}
-
-        if speech_prob < self.threshold - 0.15 and self.triggered:
-            if not self.temp_end:
-                self.temp_end = self.current_sample
-            if self.current_sample - self.temp_end >= self.min_silence_samples:
-                speech_end = self.temp_end + self.speech_pad_samples
-                if return_seconds:
-                    speech_end = round(speech_end / self.sampling_rate, 3)
+            if speech_prob >= self.threshold:
                 self.temp_end = 0
-                self.triggered = False
-                return {"end": speech_end}
-        return
+                # triggered = True means the speech has been started
+                if not self.triggered:
+                    self.triggered = True
+                    speech_start = frame_start - self.speech_pad_samples
+                    if return_seconds:
+                        speech_start = round(speech_start / self.vad_sr, 3)
+                    yield {"start": speech_start}, self.queue.get_original_frame(True)
+                else:
+                    yield None, self.queue.get_original_frame()
+            elif speech_prob < self.threshold - 0.15 and self.triggered:
+                if not self.temp_end:
+                    self.temp_end = frame_end
+                if frame_end - self.temp_end >= self.min_silence_samples:
+                    speech_end = self.temp_end + self.speech_pad_samples
+                    if return_seconds:
+                        speech_end = round(speech_end / self.vad_sr, 3)
+                    self.temp_end = 0
+                    self.triggered = False
+                    yield {"end": speech_end}, self.queue.get_original_frame()
+                else:
+                    yield None, self.queue.get_original_frame()
