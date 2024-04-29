@@ -71,7 +71,10 @@ class SileroVAD:
             if flat_layout:
                 sf.write(str(save_path) + f"_{idx:04d}.wav", wav, sample_rate)
             else:
-                sf.write(str(Path(save_path) / f"{idx:04d}.wav"), wav, sample_rate)
+                save_path = Path(save_path)
+                if not save_path.exists():
+                    save_path.mkdir(parents=True, exist_ok=True)
+                sf.write(str(save_path / f"{idx:04d}.wav"), wav, sample_rate)
         if return_seconds:
             segment["start"] = round(segment["start"] / sample_rate, 3)
             segment["end"] = round(segment["end"] / sample_rate, 3)
@@ -304,10 +307,12 @@ class VADIterator:
         self.temp_end = 0
         self.queue.clear()
 
-    def __call__(self, chunk, return_seconds=False):
+    def __call__(self, chunk, use_energy=False, return_seconds=False):
         """
         chunk: audio chunk
 
+        use_energy: bool (default - False)
+            whether to use harmonic energy to suppress background vocals
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
@@ -315,9 +320,10 @@ class VADIterator:
         for frame_start, frame_end, frame in self.queue.add_chunk(chunk):
             speech_prob = self.model(frame, self.vad_sr)
             # Suppress background vocals by harmonic energy
-            # energy = get_energy(x, self.sampling_rate, from_harmonic=4)
-            # if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
-            #     speech_prob = 0
+            if use_energy:
+                energy = get_energy(frame, self.vad_sr, from_harmonic=4)
+                if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
+                    speech_prob = 0
 
             if speech_prob >= self.threshold:
                 self.temp_end = 0
