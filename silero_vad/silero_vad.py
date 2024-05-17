@@ -69,12 +69,12 @@ class SileroVAD:
         if save_path:
             wav = wav[segment["start"] : segment["end"]]
             if flat_layout:
-                sf.write(str(save_path) + f"_{idx:04d}.wav", wav, sample_rate)
+                sf.write(str(save_path) + f"_{idx:05d}.wav", wav, sample_rate)
             else:
                 save_path = Path(save_path)
                 if not save_path.exists():
                     save_path.mkdir(parents=True, exist_ok=True)
-                sf.write(str(save_path / f"{idx:04d}.wav"), wav, sample_rate)
+                sf.write(str(save_path / f"{idx:05d}.wav"), wav, sample_rate)
         if return_seconds:
             segment["start"] = round(segment["start"] / sample_rate, 3)
             segment["end"] = round(segment["end"] / sample_rate, 3)

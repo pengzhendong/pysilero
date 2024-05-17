@@ -40,7 +40,7 @@ class FrameQueue:
         else:
             self.step = src_sr / dst_sr
             self.frame_size = frame_size_ms * dst_sr // 1000
-            self.resampler = soxr.ResampleStream(src_sr, dst_sr, 1, dtype=np.float32)
+            self.resampler = soxr.ResampleStream(src_sr, dst_sr, 1)
 
     def add_chunk(self, chunk, last=False):
         # cache
