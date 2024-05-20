@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
+import warnings
 from functools import partial
 from pathlib import Path
 from typing import Union
-import warnings
 
 import numpy as np
 import soundfile as sf
+from tqdm import tqdm
 
 from .frame_queue import FrameQueue
 from .inference_session import PickableInferenceSession
@@ -137,12 +139,19 @@ class SileroVAD:
         """
 
         wav, sr = sf.read(Path(wav_path), dtype=np.float32)
+        dur_ms = len(wav) * 1000 / sr
         if len(wav.shape) > 1:
             raise ValueError("Only supported mono wav.")
-        if len(wav) / sr * 1000 < 32:
+        if dur_ms < 32:
             raise ValueError("Input audio is too short.")
         if window_size_ms not in [32, 64, 96]:
             warnings.warn("Supported window_size_ms: [32, 64, 96]")
+        progress_bar = tqdm(
+            total=math.ceil(dur_ms / window_size_ms),
+            desc="VAD processing",
+            unit="frames",
+            bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
+        )
 
         if sr in self.sample_rates:
             vad_sr = sr
@@ -179,7 +188,8 @@ class SileroVAD:
         # to save potential segment limits in case of maximum segment size reached
         prev_end = 0
         next_start = 0
-        for frame_start, frame_end, frame in queue.add_chunk(wav):
+        for frame_start, frame_end, frame in queue.add_chunk(wav, True):
+            progress_bar.update(1)
             speech_prob = self(frame, vad_sr)
             # current frame is speech
             if speech_prob >= threshold:
@@ -307,17 +317,19 @@ class VADIterator:
         self.temp_end = 0
         self.queue.clear()
 
-    def __call__(self, chunk, use_energy=False, return_seconds=False):
+    def __call__(self, chunk, last=False, use_energy=False, return_seconds=False):
         """
         chunk: audio chunk
 
+        last: bool (default - False)
+            whether is the last audio chunk
         use_energy: bool (default - False)
             whether to use harmonic energy to suppress background vocals
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
 
-        for frame_start, frame_end, frame in self.queue.add_chunk(chunk):
+        for frame_start, frame_end, frame in self.queue.add_chunk(chunk, last):
             speech_prob = self.model(frame, self.vad_sr)
             # Suppress background vocals by harmonic energy
             if use_energy:

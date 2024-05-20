@@ -45,7 +45,10 @@ def main(wav_path: str, streaming: bool, save_path: str):
         window_size_samples = 10 * sr // 1000
         for i in range(0, len(wav), window_size_samples):
             chunk = wav[i : i + window_size_samples]
-            for speech_dict, speech_samples in vad_iterator(chunk, return_seconds=True):
+            last = len(chunk) < window_size_samples
+            for speech_dict, speech_samples in vad_iterator(
+                chunk, last, return_seconds=True
+            ):
                 if speech_dict:
                     print(speech_dict, end=" ")
                 if save_path and speech_samples is not None:
