@@ -249,10 +249,12 @@ class SileroVAD:
                     triggered = False
 
         # deal with the last speech segment
-        if current_speech and len(wav) - current_speech["start"] > min_speech_samples:
-            current_speech["end"] = len(wav)
-            yield fn(idx, current_speech)
-            idx += 1
+        if current_speech:
+            end = len(wav) // queue.step
+            if end - current_speech["start"] > min_speech_samples:
+                current_speech["end"] = end
+                yield fn(idx, current_speech)
+                idx += 1
 
 
 class VADIterator:
