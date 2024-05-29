@@ -31,22 +31,30 @@ from .utils import get_energy
 class SileroVAD:
     def __init__(self, onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
         self.session = PickableInferenceSession(onnx_model)
-        self.reset_states()
         self.sample_rates = [8000, 16000]
+        self.reset_states()
+
+    @staticmethod
+    def init_states():
+        h = np.zeros((2, 1, 64)).astype(np.float32)
+        c = np.zeros((2, 1, 64)).astype(np.float32)
+        return h, c
 
     def reset_states(self):
-        self._h = np.zeros((2, 1, 64)).astype(np.float32)
-        self._c = np.zeros((2, 1, 64)).astype(np.float32)
+        self._h, self._c = self.init_states()
 
-    def __call__(self, x, sr: int):
+    def __call__(self, x, sr, h=None, c=None):
+        use_external_state = h is not None and c is not None
         ort_inputs = {
             "input": x[np.newaxis, :],
-            "h": self._h,
-            "c": self._c,
+            "h": h if use_external_state else self._h,
+            "c": c if use_external_state else self._c,
             "sr": np.array(sr, dtype=np.int64),
         }
-        ort_outs = self.session.run(None, ort_inputs)
-        out, self._h, self._c = ort_outs
+        out, h, c = self.session.run(None, ort_inputs)
+        if use_external_state:
+            return out, h, c
+        self._h, self._c = h, c
         return out
 
     @staticmethod
@@ -177,7 +185,7 @@ class SileroVAD:
         min_silence_samples = min_silence_duration_ms * vad_sr // 1000
         max_speech_duration_samples = max_speech_duration_s * vad_sr
         max_speech_samples = max_speech_duration_samples - 2 * speech_pad_samples
-        self.reset_states()
+        h, c = self.init_states()
 
         idx = 0
         current_speech = {}
@@ -190,7 +198,7 @@ class SileroVAD:
         next_start = 0
         for frame_start, frame_end, frame in queue.add_chunk(wav, True):
             progress_bar.update(1)
-            speech_prob = self(frame, vad_sr)
+            speech_prob, h, c = self(frame, vad_sr, h, c)
             # current frame is speech
             if speech_prob >= threshold:
                 if temp_end > 0 and next_start < prev_end:
