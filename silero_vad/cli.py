@@ -41,7 +41,7 @@ def main(wav_path: str, streaming: bool, save_path: str):
             out_wav.setnchannels(1)
             out_wav.setsampwidth(2)
             out_wav.setframerate(sr)
-        # number of samples in a single audio chunk
+        # number of samples in a single audio chunk, 10ms per chunk
         window_size_samples = 10 * sr // 1000
         for i in range(0, len(wav), window_size_samples):
             chunk = wav[i : i + window_size_samples]

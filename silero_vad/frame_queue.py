@@ -24,7 +24,7 @@ class FrameQueue:
         self.padding = padding
         # cache the original samples for padding and soxr's delay
         self.speech_pad_samples = speech_pad_ms * src_sr // 1000
-        # TODO: use the largest delay of soxr
+        # TODO: use the largest delay of soxr instead of 500ms cache
         self.cached_ms = speech_pad_ms + 500
         self.current_sample = 0
         self.remained_samples = np.empty(0, dtype=np.float32)
@@ -40,11 +40,12 @@ class FrameQueue:
         else:
             self.step = src_sr / dst_sr
             self.frame_size = frame_size_ms * dst_sr // 1000
-            self.resampler = soxr.ResampleStream(src_sr, dst_sr, 1)
+            self.resampler = soxr.ResampleStream(src_sr, dst_sr, num_channels=1)
 
     def add_chunk(self, chunk, last=False):
         # cache
         if self.cached_ms > 0:
+            # cache start is the absolute sample index of the first sample in the cached_samples
             self.cache_start += len(chunk)
             self.cached_samples = np.roll(self.cached_samples, -len(chunk))
             self.cached_samples[-len(chunk) :] = chunk[-len(self.cached_samples) :]
@@ -56,23 +57,28 @@ class FrameQueue:
         while len(self.remained_samples) >= self.frame_size:
             frame = self.remained_samples[: self.frame_size]
             self.remained_samples = self.remained_samples[self.frame_size :]
-            frame_start = self.current_sample
+            # frame_start and frame_end is the sample index before resampling
+            frame_start = int(self.current_sample * self.step)
             self.current_sample += len(frame)
-            yield frame_start, self.current_sample, frame
+            frame_end = int(self.current_sample * self.step)
+            yield frame_start, frame_end, frame
 
         if last and len(self.remained_samples) > 0 and self.padding:
             frame = self.remained_samples
-            frame_start = self.current_sample
+            frame_start = int(self.current_sample * self.step)
             self.current_sample += len(frame)
             frame = np.pad(frame, (0, self.frame_size - len(frame)))
-            yield frame_start, self.current_sample, frame
+            frame_end = int(self.current_sample * self.step)
+            yield frame_start, frame_end, frame
 
-    def get_original_frame(self, speech_padding=False):
-        frame_start = self.current_sample - self.frame_size
+    def get_frame(self, speech_padding=False):
+        frame_start = int((self.current_sample - self.frame_size) * self.step)
+        frame_end = int(self.current_sample * self.step)
         if speech_padding:
             frame_start -= self.speech_pad_samples
-        speech_start = int(frame_start * self.step) - self.cache_start
-        speech_end = int(self.current_sample * self.step) - self.cache_start
+        # get the relative sample index of the speech
+        speech_start = frame_start - self.cache_start
+        speech_end = frame_end - self.cache_start
         return self.cached_samples[speech_start:speech_end]
 
     def clear(self):
