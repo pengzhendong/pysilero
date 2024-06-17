@@ -308,6 +308,8 @@ class VADIterator:
                 speech_pad_ms=speech_pad_ms,
             )
 
+        self.temp_end = 0
+        self.triggered = False
         self.threshold = threshold
         self.sampling_rate = sampling_rate
         self.speech_pad_samples = speech_pad_ms * sampling_rate // 1000
@@ -350,7 +352,7 @@ class VADIterator:
                         speech_start = round(speech_start / self.sampling_rate, 3)
                     yield {"start": speech_start}, self.queue.get_frame(True)
                 else:
-                    yield None, self.queue.get_frame()
+                    yield {}, self.queue.get_frame()
             elif speech_prob < self.threshold - 0.15 and self.triggered:
                 if not self.temp_end:
                     self.temp_end = frame_end
@@ -362,4 +364,4 @@ class VADIterator:
                     self.triggered = False
                     yield {"end": speech_end}, self.queue.get_frame()
                 else:
-                    yield None, self.queue.get_frame()
+                    yield {}, self.queue.get_frame()

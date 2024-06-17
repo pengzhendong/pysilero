@@ -49,7 +49,7 @@ def main(wav_path: str, streaming: bool, save_path: str):
             for speech_dict, speech_samples in vad_iterator(
                 chunk, last, return_seconds=True
             ):
-                if speech_dict:
+                if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")
                 if save_path and speech_samples is not None:
                     out_wav.writeframes((speech_samples * 32768).astype(np.int16))
