@@ -28,33 +28,29 @@ from .inference_session import PickableInferenceSession
 from .utils import get_energy
 
 
-class SileroVAD:
-    def __init__(self, onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
-        self.session = PickableInferenceSession(onnx_model)
-        self.sample_rates = [8000, 16000]
-        self.reset_states()
+def init_session(onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
+    return PickableInferenceSession(onnx_model)
 
-    @staticmethod
-    def init_states():
-        h = np.zeros((2, 1, 64)).astype(np.float32)
-        c = np.zeros((2, 1, 64)).astype(np.float32)
-        return h, c
+
+class SileroVAD:
+    def __init__(self, session=init_session()):
+        self.session = session
+        self.sample_rates = [8000, 16000]
+        self.h = np.zeros((2, 1, 64)).astype(np.float32)
+        self.c = np.zeros((2, 1, 64)).astype(np.float32)
 
     def reset_states(self):
-        self._h, self._c = self.init_states()
+        self.h = np.zeros((2, 1, 64)).astype(np.float32)
+        self.c = np.zeros((2, 1, 64)).astype(np.float32)
 
-    def __call__(self, x, sr, h=None, c=None):
-        use_external_state = h is not None and c is not None
+    def __call__(self, x, sr):
         ort_inputs = {
             "input": x[np.newaxis, :],
-            "h": h if use_external_state else self._h,
-            "c": c if use_external_state else self._c,
+            "h": self.h,
+            "c": self.c,
             "sr": np.array(sr, dtype=np.int64),
         }
-        out, h, c = self.session.run(None, ort_inputs)
-        if use_external_state:
-            return out, h, c
-        self._h, self._c = h, c
+        out, self.h, self.c = self.session.run(None, ort_inputs)
         return out
 
     @staticmethod
@@ -179,7 +175,6 @@ class SileroVAD:
         min_silence_samples = min_silence_duration_ms * sr // 1000
         max_speech_duration_samples = max_speech_duration_s * sr
         max_speech_samples = max_speech_duration_samples - 2 * speech_pad_samples
-        h, c = self.init_states()
 
         idx = 0
         current_speech = {}
@@ -192,7 +187,7 @@ class SileroVAD:
         next_start = 0
         for frame_start, frame_end, frame in queue.add_chunk(wav, True):
             progress_bar.update(1)
-            speech_prob, h, c = self(frame, vad_sr, h, c)
+            speech_prob = self(frame, vad_sr)
             # current frame is speech
             if speech_prob >= threshold:
                 if temp_end > 0 and next_start < prev_end:
@@ -260,6 +255,7 @@ class SileroVAD:
 class VADIterator:
     def __init__(
         self,
+        session,
         threshold: float = 0.5,
         sampling_rate: int = 16000,
         min_silence_duration_ms: int = 200,
@@ -271,6 +267,7 @@ class VADIterator:
 
         Parameters
         ----------
+        session: InferenceSession
         threshold: float (default - 0.5)
             Speech threshold. Silero VAD outputs speech probabilities for each
             audio chunk, probabilities ABOVE this value are considered as SPEECH.
@@ -290,7 +287,7 @@ class VADIterator:
             Values other than these may affect model perfomance!!
         """
 
-        self.model = SileroVAD()
+        self.model = SileroVAD(session)
         if window_size_ms not in [32, 64, 96]:
             warnings.warn("Supported window_size_ms: [32, 64, 96]")
 
@@ -365,3 +362,10 @@ class VADIterator:
                     yield {"end": speech_end}, self.queue.get_frame()
                 else:
                     yield {}, self.queue.get_frame()
+
+        if last and self.triggered:
+            speech_end = self.queue.current_sample
+            if return_seconds:
+                speech_end = round(speech_end / self.sampling_rate, 3)
+            yield {"end": speech_end}, self.queue.get_frame()
+            self.reset_states()

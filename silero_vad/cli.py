@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 import wave
 
-from silero_vad import SileroVAD, VADIterator
+from silero_vad import init_session, SileroVAD, VADIterator
 
 
 @click.command()
@@ -25,8 +25,9 @@ from silero_vad import SileroVAD, VADIterator
 @click.option("--streaming/--no-streaming", default=False, help="Streming mode")
 @click.option("--save-path", help="Save path for output audio")
 def main(wav_path: str, streaming: bool, save_path: str):
+    session = init_session()
     if not streaming:
-        vad = SileroVAD()
+        vad = SileroVAD(session)
         speech_timestamps = vad.get_speech_timestamps(
             wav_path, return_seconds=True, save_path=save_path
         )
@@ -34,7 +35,7 @@ def main(wav_path: str, streaming: bool, save_path: str):
     else:
         print("Streaming result:", end=" ")
         wav, sr = sf.read(wav_path, dtype=np.float32)
-        vad_iterator = VADIterator(sampling_rate=sr)
+        vad_iterator = VADIterator(session, sampling_rate=sr)
 
         if save_path:
             out_wav = wave.open(save_path, "w")

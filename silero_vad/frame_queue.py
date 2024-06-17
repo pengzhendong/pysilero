@@ -43,7 +43,7 @@ class FrameQueue:
             self.resampler = soxr.ResampleStream(src_sr, dst_sr, num_channels=1)
 
     def add_chunk(self, chunk, last=False):
-        # cache
+        # cache the original frame without resampling for `lookforward` of vad start
         if self.cached_ms > 0:
             # cache start is the absolute sample index of the first sample in the cached_samples
             self.cache_start += len(chunk)
@@ -58,20 +58,21 @@ class FrameQueue:
             frame = self.remained_samples[: self.frame_size]
             self.remained_samples = self.remained_samples[self.frame_size :]
             # frame_start and frame_end is the sample index before resampling
-            frame_start = int(self.current_sample * self.step)
-            self.current_sample += len(frame)
-            frame_end = int(self.current_sample * self.step)
+            frame_start = self.current_sample
+            self.current_sample += int(len(frame) * self.step)
+            frame_end = self.current_sample
             yield frame_start, frame_end, frame
 
         if last and len(self.remained_samples) > 0 and self.padding:
             frame = self.remained_samples
-            frame_start = int(self.current_sample * self.step)
-            self.current_sample += len(frame)
+            frame_start = self.current_sample
+            self.current_sample += int(len(frame) * self.step)
             frame = np.pad(frame, (0, self.frame_size - len(frame)))
-            frame_end = int(self.current_sample * self.step)
+            frame_end = self.current_sample
             yield frame_start, frame_end, frame
 
     def get_frame(self, speech_padding=False):
+        # dequeue one original frame without resampling
         frame_start = int((self.current_sample - self.frame_size) * self.step)
         frame_end = int(self.current_sample * self.step)
         if speech_padding:
