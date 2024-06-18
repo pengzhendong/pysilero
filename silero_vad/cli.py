@@ -26,27 +26,28 @@ from silero_vad import init_session, SileroVAD, VADIterator
 @click.option("--save-path", help="Save path for output audio")
 def main(wav_path: str, streaming: bool, save_path: str):
     session = init_session()
+    sample_rate = sf.info(wav_path).samplerate
+    model = SileroVAD(session, sample_rate, denoise=True)
+
     if not streaming:
-        vad = SileroVAD(session)
-        speech_timestamps = vad.get_speech_timestamps(
+        speech_timestamps = model.get_speech_timestamps(
             wav_path, return_seconds=True, save_path=save_path
         )
         print("None streaming result:", list(speech_timestamps))
     else:
         print("Streaming result:", end=" ")
-        wav, sr = sf.read(wav_path, dtype=np.float32)
-        vad_iterator = VADIterator(session, sampling_rate=sr)
-
+        audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
+        vad_iterator = VADIterator(model)
         if save_path:
             out_wav = wave.open(save_path, "w")
             out_wav.setnchannels(1)
             out_wav.setsampwidth(2)
-            out_wav.setframerate(sr)
+            out_wav.setframerate(sampling_rate)
         # number of samples in a single audio chunk, 10ms per chunk
-        window_size_samples = 10 * sr // 1000
-        for i in range(0, len(wav), window_size_samples):
-            chunk = wav[i : i + window_size_samples]
-            last = len(chunk) < window_size_samples
+        window_size_samples = 10 * sampling_rate // 1000
+        for i in range(0, len(audio), window_size_samples):
+            chunk = audio[i : i + window_size_samples]
+            last = i + window_size_samples >= len(audio)
             for speech_dict, speech_samples in vad_iterator(
                 chunk, last, return_seconds=True
             ):
@@ -54,8 +55,8 @@ def main(wav_path: str, streaming: bool, save_path: str):
                     print(speech_dict, end=" ")
                 if save_path and speech_samples is not None:
                     out_wav.writeframes((speech_samples * 32768).astype(np.int16))
-        # reset model states after each audio
-        vad_iterator.reset_states()
+        # reset after each audio
+        vad_iterator.reset()
 
 
 if __name__ == "__main__":

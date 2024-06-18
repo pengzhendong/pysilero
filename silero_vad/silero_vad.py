@@ -21,6 +21,7 @@ from typing import Union
 
 import numpy as np
 import soundfile as sf
+from pyrnnoise import RNNoise
 from tqdm import tqdm
 
 from .frame_queue import FrameQueue
@@ -33,13 +34,69 @@ def init_session(onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
 
 
 class SileroVAD:
-    def __init__(self, session=init_session()):
+    def __init__(
+        self,
+        session: PickableInferenceSession = init_session(),
+        sample_rate: int = 16000,
+        window_size_ms: int = 32,
+        min_silence_duration_ms: int = 300,
+        speech_pad_ms: int = 100,
+        denoise: bool = False,
+    ):
+        """
+        Init silero VAD model
+
+        Parameters
+        ----------
+        session: PickableInferenceSession
+            ONNX inference session
+        sample_rate: int (default - 16000)
+            sample rate of the input audio
+        window_size_ms: int (default - 32 milliseconds)
+            Audio chunks of window_size_ms size are fed to the silero VAD model.
+            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
+            for 8000 sample rate and 16000 sample rate.
+            Values other than these may affect model perfomance!!
+        min_silence_duration_ms: int (default - 300 milliseconds)
+            In the end of each speech chunk wait for min_silence_duration_ms before
+            separating it.
+        speech_pad_ms: int (default - 100 milliseconds)
+            Final speech chunks are padded by speech_pad_ms each side.
+        denoise: bool (default - False)
+            whether denoise the audio samples.
+        """
         self.session = session
-        self.sample_rates = [8000, 16000]
+        self.sample_rate = sample_rate
+        if window_size_ms not in [32, 64, 96]:
+            warnings.warn("Supported window_size_ms: [32, 64, 96]")
+        self.window_size_ms = window_size_ms
+
+        self.min_silence_samples = min_silence_duration_ms * sample_rate // 1000
+        self.speech_pad_samples = speech_pad_ms * sample_rate // 1000
+        if sample_rate in [8000, 16000]:
+            self.model_sample_rate = sample_rate
+            self.queue = FrameQueue(
+                window_size_ms, sample_rate, self.speech_pad_samples
+            )
+        else:
+            # Need to resample to 16k
+            self.model_sample_rate = 16000
+            self.queue = FrameQueue(
+                window_size_ms, sample_rate, self.speech_pad_samples, out_rate=16000
+            )
+
+        self.segment = 0
         self.h = np.zeros((2, 1, 64)).astype(np.float32)
         self.c = np.zeros((2, 1, 64)).astype(np.float32)
 
-    def reset_states(self):
+        if denoise:
+            self.denoiser = RNNoise(sample_rate)
+        else:
+            self.denoiser = None
+
+    def reset(self):
+        self.queue.clear()
+        self.segment = 0
         self.h = np.zeros((2, 1, 64)).astype(np.float32)
         self.c = np.zeros((2, 1, 64)).astype(np.float32)
 
@@ -53,33 +110,35 @@ class SileroVAD:
         out, self.h, self.c = self.session.run(None, ort_inputs)
         return out
 
-    @staticmethod
-    def process_segment(
-        idx,
-        segment,
-        wav,
-        sample_rate,
-        save_path,
-        flat_layout,
-        speech_pad_ms,
-        return_seconds,
-    ):
-        speech_pad_samples = speech_pad_ms * sample_rate // 1000
-        segment["start"] = max(segment["start"] - speech_pad_samples, 0)
-        segment["end"] = min(segment["end"] + speech_pad_samples, len(wav))
+    def denoise_chunk(self, chunk, last=False):
+        if self.denoiser is None:
+            return chunk
+        frames = []
+        for _, frame in self.denoiser.process_chunk(chunk, last):
+            frames.append(frame.squeeze())
+        return np.concatenate(frames) if len(frames) > 0 else np.array([])
+
+    def add_chunk(self, chunk, last=False):
+        chunk = self.denoise_chunk(chunk, last)
+        return self.queue.add_chunk(chunk, last)
+
+    def process_segment(self, segment, wav, save_path, flat_layout, return_seconds):
+        index = segment["segment"]
+        start = max(segment["start"] - self.speech_pad_samples, 0)
+        end = min(segment["end"] + self.speech_pad_samples, len(wav))
         if save_path is not None:
-            wav = wav[segment["start"] : segment["end"]]
+            wav = self.denoise_chunk(wav[start:end], True)
             if flat_layout:
-                sf.write(str(save_path) + f"_{idx:05d}.wav", wav, sample_rate)
+                sf.write(str(save_path) + f"_{index:05d}.wav", wav, self.sample_rate)
             else:
                 save_path = Path(save_path)
                 if not save_path.exists():
                     save_path.mkdir(parents=True, exist_ok=True)
-                sf.write(str(save_path / f"{idx:05d}.wav"), wav, sample_rate)
+                sf.write(str(save_path / f"{index:05d}.wav"), wav, self.sample_rate)
         if return_seconds:
-            segment["start"] = round(segment["start"] / sample_rate, 3)
-            segment["end"] = round(segment["end"] / sample_rate, 3)
-        return segment
+            start = round(start / self.sample_rate, 3)
+            end = round(end / self.sample_rate, 3)
+        return {"segment": index, "start": start, "end": end}
 
     def get_speech_timestamps(
         self,
@@ -89,9 +148,6 @@ class SileroVAD:
         threshold: float = 0.5,
         min_speech_duration_ms: int = 250,
         max_speech_duration_s: float = float("inf"),
-        min_silence_duration_ms: int = 200,
-        speech_pad_ms: int = 100,
-        window_size_ms: int = 32,
         return_seconds: bool = False,
     ):
         """
@@ -117,16 +173,7 @@ class SileroVAD:
             of the last silence that lasts more than 98ms (if any), to prevent
             agressive cutting. Otherwise, they will be split aggressively just
             before max_speech_duration_s.
-        min_silence_duration_ms: int (default - 200 milliseconds)
-            In the end of each speech chunk wait for min_silence_duration_ms before
-            separating it.
-        speech_pad_ms: int (default - 100 milliseconds)
-            Final speech chunks are padded by speech_pad_ms each side
-        window_size_ms: int (default - 32 milliseconds)
-            Audio chunks of window_size_ms size are fed to the silero VAD model.
-            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
-            for 8000 sample rate and 16000 sample rate.
-            Values other than these may affect model perfomance!!
+
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
 
@@ -137,46 +184,37 @@ class SileroVAD:
             based on return_seconds)
         """
 
-        wav, sr = sf.read(wav_path, dtype=np.float32)
-        dur_ms = len(wav) * 1000 / sr
-        if len(wav.shape) > 1:
+        audio, sample_rate = sf.read(wav_path, dtype=np.float32)
+        dur_ms = len(audio) * 1000 / sample_rate
+        if sample_rate != self.sample_rate:
+            raise ValueError(
+                "Sample rate mismatch.\n"
+                "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
+            )
+        if len(audio.shape) > 1:
             raise ValueError("Only supported mono wav.")
         if dur_ms < 32:
             raise ValueError("Input audio is too short.")
-        if window_size_ms not in [32, 64, 96]:
-            warnings.warn("Supported window_size_ms: [32, 64, 96]")
         progress_bar = tqdm(
-            total=math.ceil(dur_ms / window_size_ms),
+            total=math.ceil(dur_ms / self.window_size_ms),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
         )
 
-        if sr in self.sample_rates:
-            vad_sr = sr
-            queue = FrameQueue(window_size_ms, sr)
-        else:
-            vad_sr = 16000
-            queue = FrameQueue(window_size_ms, src_sr=sr, dst_sr=16000)
+        min_silence_samples_at_max_speech = 98 * sample_rate // 1000
+        min_speech_samples = min_speech_duration_ms * sample_rate // 1000
+        max_speech_duration_samples = max_speech_duration_s * sample_rate
+        max_speech_samples = max_speech_duration_samples - 2 * self.speech_pad_samples
 
         fn = partial(
             self.process_segment,
-            wav=wav,
-            sample_rate=sr,
+            wav=audio,
             save_path=save_path,
             flat_layout=flat_layout,
-            speech_pad_ms=speech_pad_ms,
             return_seconds=return_seconds,
         )
 
-        speech_pad_samples = speech_pad_ms * sr // 1000
-        min_silence_samples_at_max_speech = 98 * sr // 1000
-        min_speech_samples = min_speech_duration_ms * sr // 1000
-        min_silence_samples = min_silence_duration_ms * sr // 1000
-        max_speech_duration_samples = max_speech_duration_s * sr
-        max_speech_samples = max_speech_duration_samples - 2 * speech_pad_samples
-
-        idx = 0
         current_speech = {}
         neg_threshold = threshold - 0.15
         triggered = False
@@ -185,9 +223,9 @@ class SileroVAD:
         # to save potential segment limits in case of maximum segment size reached
         prev_end = 0
         next_start = 0
-        for frame_start, frame_end, frame in queue.add_chunk(wav, True):
+        for frame_start, frame_end, frame in self.add_chunk(audio, True):
             progress_bar.update(1)
-            speech_prob = self(frame, vad_sr)
+            speech_prob = self(frame, self.model_sample_rate)
             # current frame is speech
             if speech_prob >= threshold:
                 if temp_end > 0 and next_start < prev_end:
@@ -202,8 +240,9 @@ class SileroVAD:
                 # prev_end larger than 0 means there is a short silence in the middle avoid aggressive cutting
                 if prev_end > 0:
                     current_speech["end"] = prev_end
-                    yield fn(idx, current_speech)
-                    idx += 1
+                    current_speech["segment"] = self.segment
+                    self.segment += 1
+                    yield fn(current_speech)
                     current_speech = {}
                     # previously reached silence (< neg_thres) and is still not speech (< thres)
                     if next_start < prev_end:
@@ -215,8 +254,9 @@ class SileroVAD:
                     temp_end = 0
                 else:
                     current_speech["end"] = frame_end
-                    yield fn(idx, current_speech)
-                    idx += 1
+                    current_speech["segment"] = self.segment
+                    self.segment += 1
+                    yield fn(current_speech)
                     current_speech = {}
                     prev_end = 0
                     next_start = 0
@@ -230,15 +270,17 @@ class SileroVAD:
                 # record the last silence before reaching max speech duration
                 if frame_end - temp_end > min_silence_samples_at_max_speech:
                     prev_end = temp_end
-                if frame_end - temp_end >= min_silence_samples:
+                if frame_end - temp_end >= self.min_silence_samples:
                     current_speech["end"] = temp_end
                     # keep the speech segment if it is longer than min_speech_samples
                     if (
                         current_speech["end"] - current_speech["start"]
                         > min_speech_samples
                     ):
-                        yield fn(idx, current_speech)
-                        idx += 1
+                        current_speech["segment"] = self.segment
+                        self.segment += 1
+                        yield fn(current_speech)
+
                     current_speech = {}
                     prev_end = 0
                     next_start = 0
@@ -246,78 +288,59 @@ class SileroVAD:
                     triggered = False
 
         # deal with the last speech segment
-        if current_speech and len(wav) - current_speech["start"] > min_speech_samples:
-            current_speech["end"] = len(wav)
-            yield fn(idx, current_speech)
-            idx += 1
+        if current_speech and len(audio) - current_speech["start"] > min_speech_samples:
+            current_speech["end"] = len(audio)
+            current_speech["segment"] = self.segment
+            yield fn(current_speech)
+            self.reset()
 
 
 class VADIterator:
     def __init__(
         self,
-        session,
+        model: SileroVAD,
         threshold: float = 0.5,
-        sampling_rate: int = 16000,
         min_silence_duration_ms: int = 200,
-        speech_pad_ms: int = 100,
-        window_size_ms: int = 32,
     ):
         """
         Class for stream imitation
 
         Parameters
         ----------
-        session: InferenceSession
+        model: SileroVAD
         threshold: float (default - 0.5)
             Speech threshold. Silero VAD outputs speech probabilities for each
             audio chunk, probabilities ABOVE this value are considered as SPEECH.
             It is better to tune this parameter for each dataset separately, but
             "lazy" 0.5 is pretty good for most datasets.
-        sampling_rate: int (default - 16000)
-            Currently silero VAD models support 8000 and 16000 sample rates
         min_silence_duration_ms: int (default - 200 milliseconds)
             In the end of each speech chunk wait for min_silence_duration_ms
             before separating it
-        speech_pad_ms: int (default - 100 milliseconds)
-            Final speech chunks are padded by speech_pad_ms each side
-        window_size_ms: int (default - 32 milliseconds)
-            Audio chunks of window_size_ms size are fed to the silero VAD model.
-            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
-            for 8000 sample rate and 16000 sample rate.
-            Values other than these may affect model perfomance!!
         """
 
-        self.model = SileroVAD(session)
-        if window_size_ms not in [32, 64, 96]:
-            warnings.warn("Supported window_size_ms: [32, 64, 96]")
+        self.model = model
+        self.sample_rate = model.sample_rate
+        self.model_sample_rate = model.model_sample_rate
+        self.speech_pad_samples = model.speech_pad_samples
 
-        if sampling_rate in self.model.sample_rates:
-            self.vad_sr = sampling_rate
-            self.queue = FrameQueue(
-                window_size_ms, sampling_rate, speech_pad_ms=speech_pad_ms
-            )
-        else:
-            self.vad_sr = 16000
-            self.queue = FrameQueue(
-                window_size_ms,
-                src_sr=sampling_rate,
-                dst_sr=self.vad_sr,
-                speech_pad_ms=speech_pad_ms,
-            )
-
+        self.segment = 0
         self.temp_end = 0
         self.triggered = False
         self.threshold = threshold
-        self.sampling_rate = sampling_rate
-        self.speech_pad_samples = speech_pad_ms * sampling_rate // 1000
-        self.min_silence_samples = min_silence_duration_ms * sampling_rate // 1000
-        self.reset_states()
+        self.min_silence_samples = min_silence_duration_ms * self.sample_rate // 1000
+        self.reset()
 
-    def reset_states(self):
-        self.model.reset_states()
+    def current_sample(self):
+        return self.model.queue.current_sample
+
+    def get_frame(self, speech_padding=False):
+        return self.model.queue.get_frame(speech_padding)
+
+    def reset(self):
+        self.model.reset()
+        self.segment = 0
         self.triggered = False
         self.temp_end = 0
-        self.queue.clear()
 
     def __call__(self, chunk, last=False, use_energy=False, return_seconds=False):
         """
@@ -331,11 +354,11 @@ class VADIterator:
             whether return timestamps in seconds (default - samples)
         """
 
-        for frame_start, frame_end, frame in self.queue.add_chunk(chunk, last):
-            speech_prob = self.model(frame, self.vad_sr)
+        for frame_start, frame_end, frame in self.model.add_chunk(chunk, last):
+            speech_prob = self.model(frame, self.model_sample_rate)
             # Suppress background vocals by harmonic energy
             if use_energy:
-                energy = get_energy(frame, self.vad_sr, from_harmonic=4)
+                energy = get_energy(frame, self.model_sample_rate, from_harmonic=4)
                 if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
                     speech_prob = 0
 
@@ -346,26 +369,27 @@ class VADIterator:
                     self.triggered = True
                     speech_start = frame_start - self.speech_pad_samples
                     if return_seconds:
-                        speech_start = round(speech_start / self.sampling_rate, 3)
-                    yield {"start": speech_start}, self.queue.get_frame(True)
+                        speech_start = round(speech_start / self.sample_rate, 3)
+                    yield {"start": speech_start}, self.get_frame(True)
                 else:
-                    yield {}, self.queue.get_frame()
+                    yield {}, self.get_frame()
             elif speech_prob < self.threshold - 0.15 and self.triggered:
                 if not self.temp_end:
                     self.temp_end = frame_end
                 if frame_end - self.temp_end >= self.min_silence_samples:
                     speech_end = self.temp_end + self.speech_pad_samples
                     if return_seconds:
-                        speech_end = round(speech_end / self.sampling_rate, 3)
+                        speech_end = round(speech_end / self.sample_rate, 3)
                     self.temp_end = 0
                     self.triggered = False
-                    yield {"end": speech_end}, self.queue.get_frame()
+                    yield {"end": speech_end, "segment": self.segment}, self.get_frame()
+                    self.segment += 1
                 else:
-                    yield {}, self.queue.get_frame()
+                    yield {}, self.get_frame()
 
         if last and self.triggered:
-            speech_end = self.queue.current_sample
+            speech_end = self.current_sample()
             if return_seconds:
-                speech_end = round(speech_end / self.sampling_rate, 3)
-            yield {"end": speech_end}, self.queue.get_frame()
-            self.reset_states()
+                speech_end = round(speech_end / self.sample_rate, 3)
+            yield {"end": speech_end, "segment": self.segment}, self.get_frame()
+            self.reset()

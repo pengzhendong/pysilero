@@ -18,42 +18,41 @@ import soxr
 
 class FrameQueue:
     def __init__(
-        self, frame_size_ms, src_sr, speech_pad_ms=0, dst_sr=None, padding=True
+        self, frame_size_ms, in_rate, speech_pad_samples=0, out_rate=None, padding=True
     ):
         # padding zeros for the last frame
         self.padding = padding
+        self.speech_pad_samples = speech_pad_samples
         # cache the original samples for padding and soxr's delay
-        self.speech_pad_samples = speech_pad_ms * src_sr // 1000
         # TODO: use the largest delay of soxr instead of 500ms cache
-        self.cached_ms = speech_pad_ms + 500
+        self.cached_samples = np.zeros(speech_pad_samples + 500 * in_rate // 1000)
+        self.cache_start = -len(self.cached_samples)
+
         self.current_sample = 0
         self.remained_samples = np.empty(0, dtype=np.float32)
 
-        if self.cached_ms > 0:
-            self.cached_samples = np.zeros(self.cached_ms * src_sr // 1000)
-            self.cache_start = -len(self.cached_samples)
-
-        if src_sr == dst_sr or dst_sr is None:
+        if out_rate is None or in_rate == out_rate:
             self.step = 1.0
             self.resampler = None
-            self.frame_size = frame_size_ms * src_sr // 1000
+            self.frame_size = frame_size_ms * in_rate // 1000
         else:
-            self.step = src_sr / dst_sr
-            self.frame_size = frame_size_ms * dst_sr // 1000
-            self.resampler = soxr.ResampleStream(src_sr, dst_sr, num_channels=1)
+            self.step = in_rate / out_rate
+            self.frame_size = frame_size_ms * out_rate // 1000
+            self.resampler = soxr.ResampleStream(in_rate, out_rate, num_channels=1)
 
     def add_chunk(self, chunk, last=False):
         # cache the original frame without resampling for `lookforward` of vad start
-        if self.cached_ms > 0:
-            # cache start is the absolute sample index of the first sample in the cached_samples
+        # cache start is the absolute sample index of the first sample in the cached_samples
+        if len(chunk) > 0:
             self.cache_start += len(chunk)
             self.cached_samples = np.roll(self.cached_samples, -len(chunk))
             self.cached_samples[-len(chunk) :] = chunk[-len(self.cached_samples) :]
-        # resample
-        if self.resampler is not None:
-            chunk = self.resampler.resample_chunk(chunk, last)
-        # enqueue chunk
-        self.remained_samples = np.concatenate((self.remained_samples, chunk))
+            # resample
+            if self.resampler is not None:
+                chunk = self.resampler.resample_chunk(chunk, last)
+            # enqueue chunk
+            self.remained_samples = np.concatenate((self.remained_samples, chunk))
+
         while len(self.remained_samples) >= self.frame_size:
             frame = self.remained_samples[: self.frame_size]
             self.remained_samples = self.remained_samples[self.frame_size :]
@@ -73,8 +72,8 @@ class FrameQueue:
 
     def get_frame(self, speech_padding=False):
         # dequeue one original frame without resampling
-        frame_start = int((self.current_sample - self.frame_size) * self.step)
-        frame_end = int(self.current_sample * self.step)
+        frame_start = self.current_sample - int(self.frame_size * self.step)
+        frame_end = self.current_sample
         if speech_padding:
             frame_start -= self.speech_pad_samples
         # get the relative sample index of the speech
@@ -83,9 +82,8 @@ class FrameQueue:
         return self.cached_samples[speech_start:speech_end]
 
     def clear(self):
-        if self.cached_ms > 0:
-            self.cached_samples.fill(0)
-            self.cache_start = -len(self.cached_samples)
+        self.cached_samples.fill(0)
+        self.cache_start = -len(self.cached_samples)
         self.current_sample = 0
         self.remained_samples = np.empty(0, dtype=np.float32)
 
@@ -93,8 +91,8 @@ class FrameQueue:
 if __name__ == "__main__":
     queue = FrameQueue(3, 1000)
     frames = [[1, 2, 3], [4, 5], [6, 7, 8]]
-    for idx, frame in enumerate(frames):
+    for index, frame in enumerate(frames):
         for frame_start, frame_end, frame in queue.add_chunk(
-            frame, idx == len(frames) - 1
+            frame, index == len(frames) - 1
         ):
             print(frame_start, frame_end, frame)
