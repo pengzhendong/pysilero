@@ -39,6 +39,7 @@ class SileroVAD:
         session: PickableInferenceSession = init_session(),
         sample_rate: int = 16000,
         window_size_ms: int = 32,
+        threshold: float = 0.5,
         min_silence_duration_ms: int = 300,
         speech_pad_ms: int = 100,
         denoise: bool = False,
@@ -57,6 +58,11 @@ class SileroVAD:
             WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
             for 8000 sample rate and 16000 sample rate.
             Values other than these may affect model perfomance!!
+        threshold: float (default - 0.5)
+            Speech threshold. Silero VAD outputs speech probabilities for each audio
+            chunk, probabilities ABOVE this value are considered as SPEECH. It is
+            better to tune this parameter for each dataset separately, but "lazy"
+            0.5 is pretty good for most datasets.
         min_silence_duration_ms: int (default - 300 milliseconds)
             In the end of each speech chunk wait for min_silence_duration_ms before
             separating it.
@@ -71,6 +77,7 @@ class SileroVAD:
             warnings.warn("Supported window_size_ms: [32, 64, 96]")
         self.window_size_ms = window_size_ms
 
+        self.threshold = threshold
         self.min_silence_samples = min_silence_duration_ms * sample_rate // 1000
         self.speech_pad_samples = speech_pad_ms * sample_rate // 1000
         if sample_rate in [8000, 16000]:
@@ -145,7 +152,6 @@ class SileroVAD:
         wav_path: Union[str, Path],
         save_path: Union[str, Path] = None,
         flat_layout: bool = True,
-        threshold: float = 0.5,
         min_speech_duration_ms: int = 250,
         max_speech_duration_s: float = float("inf"),
         return_seconds: bool = False,
@@ -160,11 +166,6 @@ class SileroVAD:
             whether the save speech segments
         flat_layout: bool (default - True)
             whether use the flat directory structure
-        threshold: float (default - 0.5)
-            Speech threshold. Silero VAD outputs speech probabilities for each audio
-            chunk, probabilities ABOVE this value are considered as SPEECH. It is
-            better to tune this parameter for each dataset separately, but "lazy"
-            0.5 is pretty good for most datasets.
         min_speech_duration_ms: int (default - 250 milliseconds)
             Final speech chunks shorter min_speech_duration_ms are thrown out
         max_speech_duration_s: int (default - inf)
@@ -216,7 +217,7 @@ class SileroVAD:
         )
 
         current_speech = {}
-        neg_threshold = threshold - 0.15
+        neg_threshold = self.threshold - 0.15
         triggered = False
         # to save potential segment end (and tolerate some silence)
         temp_end = 0
@@ -227,7 +228,7 @@ class SileroVAD:
             progress_bar.update(1)
             speech_prob = self(frame, self.model_sample_rate)
             # current frame is speech
-            if speech_prob >= threshold:
+            if speech_prob >= self.threshold:
                 if temp_end > 0 and next_start < prev_end:
                     next_start = frame_end
                 temp_end = 0
@@ -296,12 +297,7 @@ class SileroVAD:
 
 
 class VADIterator:
-    def __init__(
-        self,
-        model: SileroVAD,
-        threshold: float = 0.5,
-        min_silence_duration_ms: int = 200,
-    ):
+    def __init__(self, model: SileroVAD, threshold: float = 0.5):
         """
         Class for stream imitation
 
@@ -313,21 +309,19 @@ class VADIterator:
             audio chunk, probabilities ABOVE this value are considered as SPEECH.
             It is better to tune this parameter for each dataset separately, but
             "lazy" 0.5 is pretty good for most datasets.
-        min_silence_duration_ms: int (default - 200 milliseconds)
-            In the end of each speech chunk wait for min_silence_duration_ms
-            before separating it
         """
 
         self.model = model
         self.sample_rate = model.sample_rate
         self.model_sample_rate = model.model_sample_rate
+        self.threshold = model.threshold
+        self.min_silence_samples = model.min_silence_samples
         self.speech_pad_samples = model.speech_pad_samples
 
         self.segment = 0
         self.temp_end = 0
         self.triggered = False
         self.threshold = threshold
-        self.min_silence_samples = min_silence_duration_ms * self.sample_rate // 1000
         self.reset()
 
     def current_sample(self):
@@ -367,7 +361,7 @@ class VADIterator:
                 # triggered = True means the speech has been started
                 if not self.triggered:
                     self.triggered = True
-                    speech_start = frame_start - self.speech_pad_samples
+                    speech_start = max(frame_start - self.speech_pad_samples, 0)
                     if return_seconds:
                         speech_start = round(speech_start / self.sample_rate, 3)
                     yield {"start": speech_start}, self.get_frame(True)
