@@ -18,8 +18,9 @@ import soxr
 
 class FrameQueue:
     def __init__(
-        self, frame_size_ms, in_rate, speech_pad_samples=0, out_rate=None, padding=True
+        self, frame_size, in_rate, speech_pad_samples=0, out_rate=None, padding=True
     ):
+        self.frame_size = frame_size
         # padding zeros for the last frame
         self.padding = padding
         self.speech_pad_samples = speech_pad_samples
@@ -34,10 +35,8 @@ class FrameQueue:
         if out_rate is None or in_rate == out_rate:
             self.step = 1.0
             self.resampler = None
-            self.frame_size = frame_size_ms * in_rate // 1000
         else:
             self.step = in_rate / out_rate
-            self.frame_size = frame_size_ms * out_rate // 1000
             self.resampler = soxr.ResampleStream(in_rate, out_rate, num_channels=1)
 
     def add_chunk(self, chunk, last=False):

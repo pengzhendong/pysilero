@@ -14,7 +14,6 @@
 
 import math
 import os
-import warnings
 from functools import partial
 from pathlib import Path
 from typing import Union
@@ -38,7 +37,6 @@ class SileroVAD:
         self,
         session: PickableInferenceSession = init_session(),
         sample_rate: int = 16000,
-        window_size_ms: int = 32,
         threshold: float = 0.5,
         min_silence_duration_ms: int = 300,
         speech_pad_ms: int = 100,
@@ -53,11 +51,6 @@ class SileroVAD:
             ONNX inference session
         sample_rate: int (default - 16000)
             sample rate of the input audio
-        window_size_ms: int (default - 32 milliseconds)
-            Audio chunks of window_size_ms size are fed to the silero VAD model.
-            WARNING! Silero VAD models were trained using 32, 64, 96 milliseconds
-            for 8000 sample rate and 16000 sample rate.
-            Values other than these may affect model perfomance!!
         threshold: float (default - 0.5)
             Speech threshold. Silero VAD outputs speech probabilities for each audio
             chunk, probabilities ABOVE this value are considered as SPEECH. It is
@@ -72,61 +65,51 @@ class SileroVAD:
             whether denoise the audio samples.
         """
         self.session = session
-        self.sample_rate = sample_rate
-        if window_size_ms not in [32, 64, 96]:
-            warnings.warn("Supported window_size_ms: [32, 64, 96]")
-        self.window_size_ms = window_size_ms
-
         self.threshold = threshold
-        self.min_silence_samples = min_silence_duration_ms * sample_rate // 1000
+        self.sample_rate = sample_rate
+
         self.speech_pad_samples = speech_pad_ms * sample_rate // 1000
-        if sample_rate in [8000, 16000]:
-            self.model_sample_rate = sample_rate
-            self.queue = FrameQueue(
-                window_size_ms, sample_rate, self.speech_pad_samples
-            )
-        else:
-            # Need to resample to 16k
-            self.model_sample_rate = 16000
-            self.queue = FrameQueue(
-                window_size_ms, sample_rate, self.speech_pad_samples, out_rate=16000
-            )
+        self.min_silence_samples = min_silence_duration_ms * sample_rate // 1000
+        self.model_sample_rate = sample_rate if sample_rate in [8000, 16000] else 16000
+
+        self.state = np.zeros((2, 1, 128)).astype(np.float32)
+        self.context_size = 64 if self.model_sample_rate == 16000 else 32
+        self.context = np.zeros((1, self.context_size)).astype(np.float32)
+
+        self.num_samples = 512 if self.model_sample_rate == 16000 else 256
+        self.queue = FrameQueue(
+            self.num_samples,
+            sample_rate,
+            self.speech_pad_samples,
+            out_rate=self.model_sample_rate,
+        )
 
         self.segment = 0
-        self.h = np.zeros((2, 1, 64)).astype(np.float32)
-        self.c = np.zeros((2, 1, 64)).astype(np.float32)
-
-        if denoise:
-            self.denoiser = RNNoise(sample_rate)
-        else:
-            self.denoiser = None
+        self.denoiser = RNNoise(sample_rate) if denoise else None
 
     def reset(self):
         self.queue.clear()
         self.segment = 0
-        self.h = np.zeros((2, 1, 64)).astype(np.float32)
-        self.c = np.zeros((2, 1, 64)).astype(np.float32)
+        self.state = np.zeros((2, 1, 128)).astype(np.float32)
+        self.context = np.zeros((1, self.context_size)).astype(np.float32)
 
     def __call__(self, x, sr):
-        ort_inputs = {
-            "input": x[np.newaxis, :],
-            "h": self.h,
-            "c": self.c,
-            "sr": np.array(sr, dtype=np.int64),
-        }
-        out, self.h, self.c = self.session.run(None, ort_inputs)
+        x = np.concatenate((self.context, x[np.newaxis, :]), axis=1)
+        self.context = x[:, -self.context_size :]
+        ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr)}
+        out, self.state = self.session.run(None, ort_inputs)
         return out
 
-    def denoise_chunk(self, chunk, last=False):
-        if self.denoiser is None:
-            return chunk
+    @staticmethod
+    def denoise_chunk(denoiser, chunk, last=False):
         frames = []
-        for _, frame in self.denoiser.process_chunk(chunk, last):
+        for _, frame in denoiser.process_chunk(chunk, last):
             frames.append(frame.squeeze())
         return np.concatenate(frames) if len(frames) > 0 else np.array([])
 
     def add_chunk(self, chunk, last=False):
-        chunk = self.denoise_chunk(chunk, last)
+        if self.denoiser is not None:
+            chunk = self.denoise_chunk(self.denoiser, chunk, last)
         return self.queue.add_chunk(chunk, last)
 
     def process_segment(self, segment, wav, save_path, flat_layout, return_seconds):
@@ -134,7 +117,11 @@ class SileroVAD:
         start = max(segment["start"] - self.speech_pad_samples, 0)
         end = min(segment["end"] + self.speech_pad_samples, len(wav))
         if save_path is not None:
-            wav = self.denoise_chunk(wav[start:end], True)
+            wav = wav[start:end]
+            if self.denoiser:
+                # Initial denoiser for each segments
+                denoiser = RNNoise(self.sample_rate)
+                wav = self.denoise_chunk(denoiser, wav, True)
             if flat_layout:
                 sf.write(str(save_path) + f"_{index:05d}.wav", wav, self.sample_rate)
             else:
@@ -197,7 +184,7 @@ class SileroVAD:
         if dur_ms < 32:
             raise ValueError("Input audio is too short.")
         progress_bar = tqdm(
-            total=math.ceil(dur_ms / self.window_size_ms),
+            total=math.ceil(dur_ms / self.num_samples),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
@@ -356,17 +343,17 @@ class VADIterator:
                 if speech_prob < 0.9 and energy < 500 * (1 - speech_prob):
                     speech_prob = 0
 
+            is_start = False
             if speech_prob >= self.threshold:
                 self.temp_end = 0
                 # triggered = True means the speech has been started
                 if not self.triggered:
+                    is_start = True
                     self.triggered = True
                     speech_start = max(frame_start - self.speech_pad_samples, 0)
                     if return_seconds:
                         speech_start = round(speech_start / self.sample_rate, 3)
                     yield {"start": speech_start}, self.get_frame(True)
-                else:
-                    yield {}, self.get_frame()
             elif speech_prob < self.threshold - 0.15 and self.triggered:
                 if not self.temp_end:
                     self.temp_end = frame_end
@@ -378,8 +365,8 @@ class VADIterator:
                     self.triggered = False
                     yield {"end": speech_end, "segment": self.segment}, self.get_frame()
                     self.segment += 1
-                else:
-                    yield {}, self.get_frame()
+            if not is_start and self.triggered:
+                yield {}, self.get_frame()
 
         if last and self.triggered:
             speech_end = self.current_sample()
