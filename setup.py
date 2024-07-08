@@ -19,22 +19,21 @@ with open("requirements.txt", encoding="utf8") as f:
     requirements = f.readlines()
 
 setup(
-    name="silero-vad",
+    name="pysilero",
     version=open("VERSION", encoding="utf8").read(),
     author="Zhendong Peng",
     author_email="pzd17@tsinghua.org.cn",
     long_description=open("README.md", encoding="utf8").read(),
     long_description_content_type="text/markdown",
-    description="Silero VAD",
-    url="https://github.com/pengzhendong/silero-vad",
+    url="https://github.com/pengzhendong/pysilero",
     packages=find_packages(),
     package_data={
-        "silero_vad": ["*.onnx"],
+        "pysilero": ["*.onnx"],
     },
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "silero_vad = silero_vad.cli:main",
+            "pysilero = pysilero.cli:main",
         ]
     },
     classifiers=[

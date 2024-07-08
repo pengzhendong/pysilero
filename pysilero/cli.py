@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 import wave
 
-from silero_vad import init_session, SileroVAD, VADIterator
+from pysilero import init_session, SileroVAD, VADIterator
 
 
 @click.command()
