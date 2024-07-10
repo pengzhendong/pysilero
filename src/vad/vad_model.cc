@@ -32,10 +32,8 @@ VadModel::VadModel(const std::string& model_path, bool denoise, int sample_rate,
 }
 
 void VadModel::Reset() {
-  h_.resize(SIZE_HC);
-  c_.resize(SIZE_HC);
-  std::memset(h_.data(), 0.0f, SIZE_HC * sizeof(float));
-  std::memset(c_.data(), 0.0f, SIZE_HC * sizeof(float));
+  state_.resize(SIZE_STATE);
+  std::memset(state_.data(), 0.0f, SIZE_STATE * sizeof(float));
   on_speech_ = false;
   temp_end_ = 0;
   current_sample_ = 0;
@@ -66,27 +64,22 @@ float VadModel::Forward(const std::vector<float>& pcm) {
   std::vector<int64_t> sr = {sample_rate_};
   auto sr_ort = Ort::Value::CreateTensor<int64_t>(memory_info_, sr.data(),
                                                   batch_size, sr_node_dims, 1);
-  const int64_t hc_node_dims[3] = {2, batch_size, 64};
-  auto h_ort = Ort::Value::CreateTensor<float>(memory_info_, h_.data(), SIZE_HC,
-                                               hc_node_dims, 3);
-  auto c_ort = Ort::Value::CreateTensor<float>(memory_info_, c_.data(), SIZE_HC,
-                                               hc_node_dims, 3);
+  const int64_t state_node_dims[3] = {2, batch_size, 128};
+  auto state_ort = Ort::Value::CreateTensor<float>(
+      memory_info_, state_.data(), SIZE_STATE, state_node_dims, 3);
 
   std::vector<Ort::Value> ort_inputs;
   ort_inputs.emplace_back(std::move(input_ort));
+  ort_inputs.emplace_back(std::move(state_ort));
   ort_inputs.emplace_back(std::move(sr_ort));
-  ort_inputs.emplace_back(std::move(h_ort));
-  ort_inputs.emplace_back(std::move(c_ort));
 
   auto ort_outputs = session_->Run(
       Ort::RunOptions{nullptr}, input_node_names_.data(), ort_inputs.data(),
       ort_inputs.size(), output_node_names_.data(), output_node_names_.size());
 
   float posterier = ort_outputs[0].GetTensorMutableData<float>()[0];
-  float* hn = ort_outputs[1].GetTensorMutableData<float>();
-  float* cn = ort_outputs[2].GetTensorMutableData<float>();
-  h_.assign(hn, hn + SIZE_HC);
-  c_.assign(cn, cn + SIZE_HC);
+  float* state = ort_outputs[1].GetTensorMutableData<float>();
+  state_.assign(state, state + SIZE_STATE);
 
   return posterier;
 }
