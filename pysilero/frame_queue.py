@@ -80,12 +80,6 @@ class FrameQueue:
         speech_end = frame_end - self.cache_start
         return self.cached_samples[speech_start:speech_end]
 
-    def clear(self):
-        self.cached_samples.fill(0)
-        self.cache_start = -len(self.cached_samples)
-        self.current_sample = 0
-        self.remained_samples = np.empty(0, dtype=np.float32)
-
 
 if __name__ == "__main__":
     queue = FrameQueue(3, 1000)

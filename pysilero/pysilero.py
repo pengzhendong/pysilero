@@ -79,7 +79,7 @@ class SileroVAD:
         self.num_samples = 512 if self.model_sample_rate == 16000 else 256
         self.queue = FrameQueue(
             self.num_samples,
-            sample_rate,
+            self.sample_rate,
             self.speech_pad_samples,
             out_rate=self.model_sample_rate,
         )
@@ -88,7 +88,12 @@ class SileroVAD:
         self.denoiser = RNNoise(sample_rate) if denoise else None
 
     def reset(self):
-        self.queue.clear()
+        self.queue = FrameQueue(
+            self.num_samples,
+            self.sample_rate,
+            self.speech_pad_samples,
+            out_rate=self.model_sample_rate,
+        )
         self.segment = 0
         self.state = np.zeros((2, 1, 128)).astype(np.float32)
         self.context = np.zeros((1, self.context_size)).astype(np.float32)
@@ -111,6 +116,44 @@ class SileroVAD:
         if self.denoiser is not None:
             chunk = self.denoise_chunk(self.denoiser, chunk, last)
         return self.queue.add_chunk(chunk, last)
+
+    def read_audio(self, wav_path: Union[str, Path]):
+        audio, sample_rate = sf.read(wav_path, dtype=np.float32)
+        if sample_rate != self.sample_rate:
+            raise ValueError(
+                "Sample rate mismatch.\n"
+                "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
+            )
+        if len(audio.shape) > 1:
+            raise ValueError("Only supported mono wav.")
+        dur_ms = len(audio) * 1000 / sample_rate
+        if dur_ms < 32:
+            raise ValueError("Input audio is too short.")
+        return audio, sample_rate, dur_ms
+
+    def get_speech_probs(self, wav_path: Union[str, Path]):
+        """
+        Getting speech probabilities of audio frames (32ms/frame)
+
+        Parameters
+        ----------
+        wav_path: wav path
+
+        Returns
+        ----------
+        speech_probs: list of speech probabilities
+        """
+        self.reset()
+        audio, _, dur_ms = self.read_audio(wav_path)
+        progress_bar = tqdm(
+            total=math.ceil(dur_ms / 32),
+            desc="VAD processing",
+            unit="frames",
+            bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
+        )
+        for _, _, frame in self.add_chunk(audio, True):
+            progress_bar.update(1)
+            yield np.around(self(frame, self.model_sample_rate)[0][0], 2)
 
     def process_segment(self, segment, wav, save_path, flat_layout, return_seconds):
         index = segment["segment"]
@@ -161,7 +204,6 @@ class SileroVAD:
             of the last silence that lasts more than 98ms (if any), to prevent
             agressive cutting. Otherwise, they will be split aggressively just
             before max_speech_duration_s.
-
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
 
@@ -171,18 +213,8 @@ class SileroVAD:
             list containing ends and beginnings of speech chunks (samples or seconds
             based on return_seconds)
         """
-
-        audio, sample_rate = sf.read(wav_path, dtype=np.float32)
-        if sample_rate != self.sample_rate:
-            raise ValueError(
-                "Sample rate mismatch.\n"
-                "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
-            )
-        if len(audio.shape) > 1:
-            raise ValueError("Only supported mono wav.")
-        dur_ms = len(audio) * 1000 / sample_rate
-        if dur_ms < 32:
-            raise ValueError("Input audio is too short.")
+        self.reset()
+        audio, sample_rate, dur_ms = self.read_audio(wav_path)
         progress_bar = tqdm(
             total=math.ceil(dur_ms / 32),
             desc="VAD processing",
@@ -280,7 +312,6 @@ class SileroVAD:
             current_speech["end"] = len(audio)
             current_speech["segment"] = self.segment
             yield fn(current_speech)
-            self.reset()
 
 
 class VADIterator:
@@ -297,7 +328,6 @@ class VADIterator:
             It is better to tune this parameter for each dataset separately, but
             "lazy" 0.5 is pretty good for most datasets.
         """
-
         self.model = model
         self.sample_rate = model.sample_rate
         self.model_sample_rate = model.model_sample_rate
@@ -334,7 +364,6 @@ class VADIterator:
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
-
         for frame_start, frame_end, frame in self.model.add_chunk(chunk, last):
             speech_prob = self.model(frame, self.model_sample_rate)
             # Suppress background vocals by harmonic energy

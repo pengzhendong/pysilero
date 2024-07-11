@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import click
+import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 import wave
@@ -25,7 +26,8 @@ from pysilero import init_session, SileroVAD, VADIterator
 @click.option("--denoise/--no-denoise", default=False, help="Denoise before vad")
 @click.option("--streaming/--no-streaming", default=False, help="Streming mode")
 @click.option("--save-path", help="Save path for output audio")
-def main(wav_path: str, denoise: bool, streaming: bool, save_path: str):
+@click.option("--plot/--no-plot", default=False, help="Plot the vad probabilities")
+def main(wav_path: str, denoise: bool, streaming: bool, save_path: str, plot: bool):
     session = init_session()
     sample_rate = sf.info(wav_path).samplerate
     model = SileroVAD(session, sample_rate, denoise=denoise)
@@ -56,8 +58,15 @@ def main(wav_path: str, denoise: bool, streaming: bool, save_path: str):
                     print(speech_dict, end=" ")
                 if save_path and speech_samples is not None:
                     out_wav.writeframes((speech_samples * 32768).astype(np.int16))
-        # reset after each audio
-        vad_iterator.reset()
+
+    if plot:
+        audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
+        x1 = np.arange(0, len(audio)) / sampling_rate
+        outputs = list(model.get_speech_probs(wav_path))
+        x2 = [i * 32 / 1000 for i in range(0, len(outputs))]
+        plt.plot(x1, audio)
+        plt.plot(x2, outputs)
+        plt.show()
 
 
 if __name__ == "__main__":
