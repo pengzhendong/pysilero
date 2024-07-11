@@ -35,7 +35,7 @@ def init_session(onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
 class SileroVAD:
     def __init__(
         self,
-        session: PickableInferenceSession = init_session(),
+        session: PickableInferenceSession = None,
         sample_rate: int = 16000,
         threshold: float = 0.5,
         min_silence_duration_ms: int = 300,
@@ -64,7 +64,7 @@ class SileroVAD:
         denoise: bool (default - False)
             whether denoise the audio samples.
         """
-        self.session = session
+        self.session = session or init_session()
         self.threshold = threshold
         self.sample_rate = sample_rate
 
@@ -173,7 +173,6 @@ class SileroVAD:
         """
 
         audio, sample_rate = sf.read(wav_path, dtype=np.float32)
-        dur_ms = len(audio) * 1000 / sample_rate
         if sample_rate != self.sample_rate:
             raise ValueError(
                 "Sample rate mismatch.\n"
@@ -181,10 +180,11 @@ class SileroVAD:
             )
         if len(audio.shape) > 1:
             raise ValueError("Only supported mono wav.")
+        dur_ms = len(audio) * 1000 / sample_rate
         if dur_ms < 32:
             raise ValueError("Input audio is too short.")
         progress_bar = tqdm(
-            total=math.ceil(dur_ms / self.num_samples),
+            total=math.ceil(dur_ms / 32),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",

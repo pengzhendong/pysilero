@@ -22,12 +22,13 @@ from pysilero import init_session, SileroVAD, VADIterator
 
 @click.command()
 @click.argument("wav_path", type=click.Path(exists=True, file_okay=True))
+@click.option("--denoise/--no-denoise", default=False, help="Denoise before vad")
 @click.option("--streaming/--no-streaming", default=False, help="Streming mode")
 @click.option("--save-path", help="Save path for output audio")
-def main(wav_path: str, streaming: bool, save_path: str):
+def main(wav_path: str, denoise: bool, streaming: bool, save_path: str):
     session = init_session()
     sample_rate = sf.info(wav_path).samplerate
-    model = SileroVAD(session, sample_rate, denoise=True)
+    model = SileroVAD(session, sample_rate, denoise=denoise)
 
     if not streaming:
         speech_timestamps = model.get_speech_timestamps(
