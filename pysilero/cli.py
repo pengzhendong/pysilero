@@ -18,21 +18,21 @@ import numpy as np
 import soundfile as sf
 import wave
 
-from pysilero import init_session, SileroVAD, VADIterator
+from pysilero import SileroVAD, VADIterator
 
 
 @click.command()
 @click.argument("wav_path", type=click.Path(exists=True, file_okay=True))
+@click.option("--version", default="v5", help="Silero VAD version")
 @click.option("--denoise/--no-denoise", default=False, help="Denoise before vad")
 @click.option("--streaming/--no-streaming", default=False, help="Streming mode")
 @click.option("--save-path", help="Save path for output audio")
 @click.option("--plot/--no-plot", default=False, help="Plot the vad probabilities")
-def main(wav_path: str, denoise: bool, streaming: bool, save_path: str, plot: bool):
-    session = init_session()
+def main(wav_path, version, denoise, streaming, save_path, plot):
     sample_rate = sf.info(wav_path).samplerate
-    model = SileroVAD(session, sample_rate, denoise=denoise)
 
     if not streaming:
+        model = SileroVAD(version, sample_rate, denoise=denoise)
         speech_timestamps = model.get_speech_timestamps(
             wav_path, return_seconds=True, save_path=save_path
         )
@@ -40,8 +40,8 @@ def main(wav_path: str, denoise: bool, streaming: bool, save_path: str, plot: bo
     else:
         print("Streaming result:", end=" ")
         audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
-        vad_iterator = VADIterator(model)
-        if save_path:
+        vad_iterator = VADIterator(version)
+        if save_path is not None:
             out_wav = wave.open(save_path, "w")
             out_wav.setnchannels(1)
             out_wav.setsampwidth(2)
@@ -56,7 +56,7 @@ def main(wav_path: str, denoise: bool, streaming: bool, save_path: str, plot: bo
             ):
                 if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")
-                if save_path and speech_samples is not None:
+                if save_path is not None and speech_samples is not None:
                     out_wav.writeframes((speech_samples * 32768).astype(np.int16))
 
     if plot:

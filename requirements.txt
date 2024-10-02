@@ -1,4 +1,5 @@
 librosa
+modelscope
 numpy
 onnxruntime
 soxr

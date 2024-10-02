@@ -14,27 +14,28 @@
 
 import onnxruntime as ort
 
-
-def init_session(model_path):
-    opts = ort.SessionOptions()
-    opts.inter_op_num_threads = 1
-    opts.intra_op_num_threads = 1
-    opts.log_severity_level = 3
-    sess = ort.InferenceSession(model_path, sess_options=opts)
-    return sess
+from modelscope import snapshot_download
 
 
-class PickableInferenceSession:
+class PickableSession:
     """
     This is a wrapper to make the current InferenceSession class pickable.
     """
 
-    def __init__(self, model_path):
-        self.model_path = model_path
-        self.sess = init_session(self.model_path)
+    def __init__(self, version="v5"):
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        opts.log_severity_level = 3
+
+        assert version in ["v4", "v5"]
+        repo_dir = snapshot_download("pengzhendong/silero-vad")
+        self.sess = ort.InferenceSession(
+            f"{repo_dir}/{version}/silero_vad.onnx", sess_options=opts
+        )
 
     def run(self, *args):
-        return self.sess.run(*args)
+        return self.sess.run(None, *args)
 
     def __getstate__(self):
         return {"model_path": self.model_path}
@@ -42,3 +43,7 @@ class PickableInferenceSession:
     def __setstate__(self, values):
         self.model_path = values["model_path"]
         self.sess = init_session(self.model_path)
+
+
+VERSIONS = ["v4", "v5"]
+silero_vad = {version: PickableSession(version) for version in VERSIONS}

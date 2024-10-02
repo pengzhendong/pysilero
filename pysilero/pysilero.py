@@ -20,22 +20,19 @@ from typing import Union
 
 import numpy as np
 import soundfile as sf
+from modelscope import snapshot_download
 from pyrnnoise import RNNoise
 from tqdm import tqdm
 
 from .frame_queue import FrameQueue
-from .inference_session import PickableInferenceSession
+from .pickable_session import silero_vad
 from .utils import get_energy
-
-
-def init_session(onnx_model=f"{os.path.dirname(__file__)}/silero_vad.onnx"):
-    return PickableInferenceSession(onnx_model)
 
 
 class SileroVAD:
     def __init__(
         self,
-        session: PickableInferenceSession = None,
+        version: str = "v5",
         sample_rate: int = 16000,
         threshold: float = 0.5,
         min_silence_duration_ms: int = 300,
@@ -47,8 +44,8 @@ class SileroVAD:
 
         Parameters
         ----------
-        session: PickableInferenceSession
-            ONNX inference session
+        version: str (default - v5)
+            silero-vad version (v4 or v5)
         sample_rate: int (default - 16000)
             sample rate of the input audio
         threshold: float (default - 0.5)
@@ -64,7 +61,8 @@ class SileroVAD:
         denoise: bool (default - False)
             whether denoise the audio samples.
         """
-        self.session = session or init_session()
+        self.version = version
+        self.session = silero_vad[version]
         self.threshold = threshold
         self.sample_rate = sample_rate
 
@@ -72,9 +70,13 @@ class SileroVAD:
         self.min_silence_samples = min_silence_duration_ms * sample_rate // 1000
         self.model_sample_rate = sample_rate if sample_rate in [8000, 16000] else 16000
 
-        self.state = np.zeros((2, 1, 128)).astype(np.float32)
-        self.context_size = 64 if self.model_sample_rate == 16000 else 32
-        self.context = np.zeros((1, self.context_size)).astype(np.float32)
+        if self.version == "v4":
+            self.h = np.zeros((2, 1, 64)).astype(np.float32)
+            self.c = np.zeros((2, 1, 64)).astype(np.float32)
+        else:
+            self.state = np.zeros((2, 1, 128)).astype(np.float32)
+            self.context_size = 64 if self.model_sample_rate == 16000 else 32
+            self.context = np.zeros((1, self.context_size)).astype(np.float32)
 
         self.num_samples = 512 if self.model_sample_rate == 16000 else 256
         self.queue = FrameQueue(
@@ -88,22 +90,32 @@ class SileroVAD:
         self.denoiser = RNNoise(sample_rate) if denoise else None
 
     def reset(self):
+        self.segment = 0
         self.queue = FrameQueue(
             self.num_samples,
             self.sample_rate,
             self.speech_pad_samples,
             out_rate=self.model_sample_rate,
         )
-        self.segment = 0
-        self.state = np.zeros((2, 1, 128)).astype(np.float32)
-        self.context = np.zeros((1, self.context_size)).astype(np.float32)
+        if self.version == "v4":
+            self.h = np.zeros((2, 1, 64)).astype(np.float32)
+            self.c = np.zeros((2, 1, 64)).astype(np.float32)
+        else:
+            self.state = np.zeros((2, 1, 128)).astype(np.float32)
+            self.context = np.zeros((1, self.context_size)).astype(np.float32)
 
     def __call__(self, x, sr):
-        x = np.concatenate((self.context, x[np.newaxis, :]), axis=1)
-        self.context = x[:, -self.context_size :]
-        ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr)}
-        out, self.state = self.session.run(None, ort_inputs)
-        return out
+        if self.version == "v4":
+            x = x[np.newaxis, :]
+            sr = np.array(sr, dtype=np.int64)
+            ort_inputs = {"input": x, "h": self.h, "c": self.c, "sr": sr}
+            output, self.h, self.c = self.session.run(ort_inputs)
+        else:
+            x = np.concatenate((self.context, x[np.newaxis, :]), axis=1)
+            self.context = x[:, -self.context_size :]
+            ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr)}
+            output, self.state = self.session.run(ort_inputs)
+        return output
 
     @staticmethod
     def denoise_chunk(denoiser, chunk, last=False):
@@ -161,7 +173,7 @@ class SileroVAD:
         end = min(segment["end"] + self.speech_pad_samples, len(wav))
         if save_path is not None:
             wav = wav[start:end]
-            if self.denoiser:
+            if self.denoiser is not None:
                 # Initial denoiser for each segments
                 denoiser = RNNoise(self.sample_rate)
                 wav = self.denoise_chunk(denoiser, wav, True)
@@ -314,44 +326,44 @@ class SileroVAD:
             yield fn(current_speech)
 
 
-class VADIterator:
-    def __init__(self, model: SileroVAD, threshold: float = 0.5):
+class VADIterator(SileroVAD):
+    def __init__(
+        self,
+        version: str = "v5",
+        sample_rate: int = 16000,
+        threshold: float = 0.5,
+        min_silence_duration_ms: int = 300,
+        speech_pad_ms: int = 100,
+        denoise: bool = False,
+    ):
         """
         Class for stream imitation
-
-        Parameters
-        ----------
-        model: SileroVAD
-        threshold: float (default - 0.5)
-            Speech threshold. Silero VAD outputs speech probabilities for each
-            audio chunk, probabilities ABOVE this value are considered as SPEECH.
-            It is better to tune this parameter for each dataset separately, but
-            "lazy" 0.5 is pretty good for most datasets.
         """
-        self.model = model
-        self.sample_rate = model.sample_rate
-        self.model_sample_rate = model.model_sample_rate
-        self.threshold = model.threshold
-        self.min_silence_samples = model.min_silence_samples
-        self.speech_pad_samples = model.speech_pad_samples
-
+        super().__init__(
+            version,
+            sample_rate,
+            threshold,
+            min_silence_duration_ms,
+            speech_pad_ms,
+            denoise,
+        )
         self.segment = 0
         self.temp_end = 0
         self.triggered = False
-        self.threshold = threshold
+        self.speech_samples = np.empty(0, dtype=np.float32)
         self.reset()
 
-    def current_sample(self):
-        return self.model.queue.current_sample
+    def reset(self):
+        super().reset()
+        self.segment = 0
+        self.temp_end = 0
+        self.triggered = False
+        self.speech_samples = np.empty(0, dtype=np.float32)
 
     def get_frame(self, speech_padding=False):
-        return self.model.queue.get_frame(speech_padding)
-
-    def reset(self):
-        self.model.reset()
-        self.segment = 0
-        self.triggered = False
-        self.temp_end = 0
+        frame = self.queue.get_frame(speech_padding)
+        self.speech_samples = np.concatenate((self.speech_samples, frame))
+        return frame
 
     def __call__(self, chunk, last=False, use_energy=False, return_seconds=False):
         """
@@ -364,8 +376,8 @@ class VADIterator:
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
-        for frame_start, frame_end, frame in self.model.add_chunk(chunk, last):
-            speech_prob = self.model(frame, self.model_sample_rate)
+        for frame_start, frame_end, frame in self.add_chunk(chunk, last):
+            speech_prob = super().__call__(frame, self.model_sample_rate)
             # Suppress background vocals by harmonic energy
             if use_energy:
                 energy = get_energy(frame, self.model_sample_rate, from_harmonic=4)
@@ -398,7 +410,7 @@ class VADIterator:
                 yield {}, self.get_frame()
 
         if last and self.triggered:
-            speech_end = self.current_sample()
+            speech_end = self.queue.current_sample
             if return_seconds:
                 speech_end = round(speech_end / self.sample_rate, 3)
             yield {"end": speech_end, "segment": self.segment}, self.get_frame()
