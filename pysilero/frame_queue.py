@@ -26,7 +26,8 @@ class FrameQueue:
         self.speech_pad_samples = speech_pad_samples
         # cache the original samples for padding and soxr's delay
         # TODO: use the largest delay of soxr instead of 500ms cache
-        self.cached_samples = np.zeros(speech_pad_samples + 500 * in_rate // 1000)
+        num_cached_samples = speech_pad_samples + 500 * in_rate // 1000
+        self.cached_samples = np.zeros(num_cached_samples, dtype=np.float32)
         self.cache_start = -len(self.cached_samples)
 
         self.current_sample = 0

@@ -71,12 +71,12 @@ class SileroVAD:
         self.model_sample_rate = sample_rate if sample_rate in [8000, 16000] else 16000
 
         if self.version == "v4":
-            self.h = np.zeros((2, 1, 64)).astype(np.float32)
-            self.c = np.zeros((2, 1, 64)).astype(np.float32)
+            self.h = np.zeros((2, 1, 64), dtype=np.float32)
+            self.c = np.zeros((2, 1, 64), dtype=np.float32)
         else:
-            self.state = np.zeros((2, 1, 128)).astype(np.float32)
+            self.state = np.zeros((2, 1, 128), dtype=np.float32)
             self.context_size = 64 if self.model_sample_rate == 16000 else 32
-            self.context = np.zeros((1, self.context_size)).astype(np.float32)
+            self.context = np.zeros((1, self.context_size), dtype=np.float32)
 
         self.num_samples = 512 if self.model_sample_rate == 16000 else 256
         self.queue = FrameQueue(
@@ -98,11 +98,11 @@ class SileroVAD:
             out_rate=self.model_sample_rate,
         )
         if self.version == "v4":
-            self.h = np.zeros((2, 1, 64)).astype(np.float32)
-            self.c = np.zeros((2, 1, 64)).astype(np.float32)
+            self.h = np.zeros((2, 1, 64), dtype=np.float32)
+            self.c = np.zeros((2, 1, 64), dtype=np.float32)
         else:
-            self.state = np.zeros((2, 1, 128)).astype(np.float32)
-            self.context = np.zeros((1, self.context_size)).astype(np.float32)
+            self.state = np.zeros((2, 1, 128), dtype=np.float32)
+            self.context = np.zeros((1, self.context_size), dtype=np.float32)
 
     def __call__(self, x, sr):
         if self.version == "v4":
@@ -394,6 +394,7 @@ class VADIterator(SileroVAD):
                     speech_start = max(frame_start - self.speech_pad_samples, 0)
                     if return_seconds:
                         speech_start = round(speech_start / self.sample_rate, 3)
+                    self.speech_samples = np.empty(0, dtype=np.float32)
                     yield {"start": speech_start}, self.get_frame(True)
             elif speech_prob < self.threshold - 0.15 and self.triggered:
                 if not self.temp_end:
