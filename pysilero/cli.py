@@ -37,6 +37,15 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
             wav_path, return_seconds=True, save_path=save_path
         )
         print("None streaming result:", list(speech_timestamps))
+
+        if plot:
+            audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
+            x1 = np.arange(0, len(audio)) / sampling_rate
+            outputs = list(model.get_speech_probs(wav_path))
+            x2 = [i * 32 / 1000 for i in range(0, len(outputs))]
+            plt.plot(x1, audio)
+            plt.plot(x2, outputs)
+            plt.show()
     else:
         print("Streaming result:", end=" ")
         audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
@@ -58,15 +67,6 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
                     print(speech_dict, end=" ")
                 if save_path is not None and speech_samples is not None:
                     out_wav.writeframes((speech_samples * 32768).astype(np.int16))
-
-    if plot:
-        audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
-        x1 = np.arange(0, len(audio)) / sampling_rate
-        outputs = list(model.get_speech_probs(wav_path))
-        x2 = [i * 32 / 1000 for i in range(0, len(outputs))]
-        plt.plot(x1, audio)
-        plt.plot(x2, outputs)
-        plt.show()
 
 
 if __name__ == "__main__":

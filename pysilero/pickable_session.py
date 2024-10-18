@@ -31,7 +31,9 @@ class PickableSession:
         assert version in ["v4", "v5"]
         repo_dir = snapshot_download("pengzhendong/silero-vad")
         self.sess = ort.InferenceSession(
-            f"{repo_dir}/{version}/silero_vad.onnx", sess_options=opts
+            f"{repo_dir}/{version}/silero_vad.onnx",
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
         )
 
     def run(self, *args):
