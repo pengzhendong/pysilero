@@ -118,16 +118,16 @@ class SileroVAD:
         return output
 
     @staticmethod
-    def denoise_chunk(denoiser, chunk, last=False):
+    def denoise_chunk(denoiser, chunk, is_last=False):
         frames = []
-        for _, frame in denoiser.process_chunk(chunk, last):
+        for _, frame in denoiser.process_chunk(chunk, is_last):
             frames.append(frame.squeeze())
         return np.concatenate(frames) if len(frames) > 0 else np.array([])
 
-    def add_chunk(self, chunk, last=False):
+    def add_chunk(self, chunk, is_last=False):
         if self.denoiser is not None:
-            chunk = self.denoise_chunk(self.denoiser, chunk, last)
-        return self.queue.add_chunk(chunk, last)
+            chunk = self.denoise_chunk(self.denoiser, chunk, is_last)
+        return self.queue.add_chunk(chunk, is_last)
 
     def read_audio(self, wav_path: Union[str, Path]):
         audio, sample_rate = sf.read(wav_path, dtype=np.float32)
@@ -350,6 +350,7 @@ class VADIterator(SileroVAD):
         self.segment = 0
         self.temp_end = 0
         self.triggered = False
+        # for offline asr
         self.speech_samples = np.empty(0, dtype=np.float32)
         self.reset()
 
@@ -362,21 +363,23 @@ class VADIterator(SileroVAD):
 
     def get_frame(self, speech_padding=False):
         frame = self.queue.get_frame(speech_padding)
+        if speech_padding:
+            self.speech_samples = np.empty(0, dtype=np.float32)
         self.speech_samples = np.concatenate((self.speech_samples, frame))
         return frame
 
-    def __call__(self, chunk, last=False, use_energy=False, return_seconds=False):
+    def __call__(self, chunk, is_last=False, use_energy=False, return_seconds=False):
         """
         chunk: audio chunk
 
-        last: bool (default - False)
+        is_last: bool (default - False)
             whether is the last audio chunk
         use_energy: bool (default - False)
             whether to use harmonic energy to suppress background vocals
         return_seconds: bool (default - False)
             whether return timestamps in seconds (default - samples)
         """
-        for frame_start, frame_end, frame in self.add_chunk(chunk, last):
+        for frame_start, frame_end, frame in self.add_chunk(chunk, is_last):
             speech_prob = super().__call__(frame, self.model_sample_rate)
             # Suppress background vocals by harmonic energy
             if use_energy:
@@ -394,7 +397,6 @@ class VADIterator(SileroVAD):
                     speech_start = max(frame_start - self.speech_pad_samples, 0)
                     if return_seconds:
                         speech_start = round(speech_start / self.sample_rate, 3)
-                    self.speech_samples = np.empty(0, dtype=np.float32)
                     yield {"start": speech_start}, self.get_frame(True)
             elif speech_prob < self.threshold - 0.15 and self.triggered:
                 if not self.temp_end:
@@ -410,7 +412,7 @@ class VADIterator(SileroVAD):
             if not is_start and self.triggered:
                 yield {}, self.get_frame()
 
-        if last and self.triggered:
+        if is_last and self.triggered:
             speech_end = self.queue.current_sample
             if return_seconds:
                 speech_end = round(speech_end / self.sample_rate, 3)

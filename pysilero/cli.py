@@ -49,7 +49,7 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
     else:
         print("Streaming result:", end=" ")
         audio, sampling_rate = sf.read(wav_path, dtype=np.float32)
-        vad_iterator = VADIterator(version)
+        vad_iterator = VADIterator(version, sampling_rate)
         if save_path is not None:
             out_wav = wave.open(save_path, "w")
             out_wav.setnchannels(1)
@@ -59,9 +59,9 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
         window_size_samples = 10 * sampling_rate // 1000
         for i in range(0, len(audio), window_size_samples):
             chunk = audio[i : i + window_size_samples]
-            last = i + window_size_samples >= len(audio)
+            is_last = i + window_size_samples >= len(audio)
             for speech_dict, speech_samples in vad_iterator(
-                chunk, last, return_seconds=True
+                chunk, is_last, return_seconds=True
             ):
                 if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")

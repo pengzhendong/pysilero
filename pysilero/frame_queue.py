@@ -40,7 +40,7 @@ class FrameQueue:
             self.step = in_rate / out_rate
             self.resampler = soxr.ResampleStream(in_rate, out_rate, num_channels=1)
 
-    def add_chunk(self, chunk, last=False):
+    def add_chunk(self, chunk, is_last=False):
         # cache the original frame without resampling for `lookforward` of vad start
         # cache start is the absolute sample index of the first sample in the cached_samples
         if len(chunk) > 0:
@@ -49,7 +49,7 @@ class FrameQueue:
             self.cached_samples[-len(chunk) :] = chunk[-len(self.cached_samples) :]
             # resample
             if self.resampler is not None:
-                chunk = self.resampler.resample_chunk(chunk, last)
+                chunk = self.resampler.resample_chunk(chunk, is_last)
             # enqueue chunk
             self.remained_samples = np.concatenate((self.remained_samples, chunk))
 
@@ -62,7 +62,7 @@ class FrameQueue:
             frame_end = self.current_sample
             yield frame_start, frame_end, frame
 
-        if last and len(self.remained_samples) > 0 and self.padding:
+        if is_last and len(self.remained_samples) > 0 and self.padding:
             frame = self.remained_samples
             frame_start = self.current_sample
             self.current_sample += int(len(frame) * self.step)
