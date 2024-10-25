@@ -113,7 +113,7 @@ class SileroVAD:
         else:
             x = np.concatenate((self.context, x[np.newaxis, :]), axis=1)
             self.context = x[:, -self.context_size :]
-            ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr)}
+            ort_inputs = {"input": x, "state": self.state, "sr": np.array(sr, dtype=np.int64)}
             output, self.state = self.session.run(ort_inputs)
         return output
 
