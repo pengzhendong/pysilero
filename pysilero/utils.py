@@ -18,7 +18,6 @@ import librosa
 import numpy as np
 import parselmouth
 
-
 warnings.filterwarnings("ignore")
 
 
@@ -34,9 +33,7 @@ def get_energy(chunk, sr, from_harmonic=1, to_harmonic=5):
 
     # energy form x-th harmonic to y-th harmonic
     freqs = librosa.fft_frequencies(sr=sr)
-    freq_band_idx = np.where(
-        (freqs >= from_harmonic * pitch) & (freqs <= to_harmonic * pitch)
-    )[0]
+    freq_band_idx = np.where((freqs >= from_harmonic * pitch) & (freqs <= to_harmonic * pitch))[0]
     energy = np.sum(np.abs(librosa.stft(chunk)[freq_band_idx, :]))
 
     return energy

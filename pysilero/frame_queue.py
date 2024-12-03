@@ -17,9 +17,7 @@ import soxr
 
 
 class FrameQueue:
-    def __init__(
-        self, frame_size, in_rate, speech_pad_samples=0, out_rate=None, padding=True
-    ):
+    def __init__(self, frame_size, in_rate, speech_pad_samples=0, out_rate=None, padding=True):
         self.frame_size = frame_size
         # padding zeros for the last frame
         self.padding = padding
@@ -86,7 +84,5 @@ if __name__ == "__main__":
     queue = FrameQueue(3, 1000)
     frames = [[1, 2, 3], [4, 5], [6, 7, 8]]
     for index, frame in enumerate(frames):
-        for frame_start, frame_end, frame in queue.add_chunk(
-            frame, index == len(frames) - 1
-        ):
+        for frame_start, frame_end, frame in queue.add_chunk(frame, index == len(frames) - 1):
             print(frame_start, frame_end, frame)

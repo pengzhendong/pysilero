@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import onnxruntime as ort
+from functools import partial
 
+import onnxruntime as ort
 from modelscope import snapshot_download
 
 
@@ -30,11 +31,9 @@ class PickableSession:
 
         assert version in ["v4", "v5"]
         repo_dir = snapshot_download("pengzhendong/silero-vad")
-        self.sess = ort.InferenceSession(
-            f"{repo_dir}/{version}/silero_vad.onnx",
-            sess_options=opts,
-            providers=["CPUExecutionProvider"],
-        )
+        self.model_path = f"{repo_dir}/{version}/silero_vad.onnx"
+        self.init_session = partial(ort.InferenceSession, sess_options=opts, providers=["CPUExecutionProvider"])
+        self.sess = self.init_session(self.model_path)
 
     def run(self, *args):
         return self.sess.run(None, *args)
@@ -44,7 +43,7 @@ class PickableSession:
 
     def __setstate__(self, values):
         self.model_path = values["model_path"]
-        self.sess = init_session(self.model_path)
+        self.sess = self.init_session(self.model_path)
 
 
 VERSIONS = ["v4", "v5"]

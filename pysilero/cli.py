@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import wave
+
 import click
 import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
-import wave
 
 from pysilero import SileroVAD, VADIterator
 
@@ -33,9 +34,7 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
 
     if not streaming:
         model = SileroVAD(version, sample_rate, denoise=denoise)
-        speech_timestamps = model.get_speech_timestamps(
-            wav_path, return_seconds=True, save_path=save_path
-        )
+        speech_timestamps = model.get_speech_timestamps(wav_path, return_seconds=True, save_path=save_path)
         print("None streaming result:", list(speech_timestamps))
 
         if plot:
@@ -60,9 +59,7 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
         for i in range(0, len(audio), window_size_samples):
             chunk = audio[i : i + window_size_samples]
             is_last = i + window_size_samples >= len(audio)
-            for speech_dict, speech_samples in vad_iterator(
-                chunk, is_last, return_seconds=True
-            ):
+            for speech_dict, speech_samples in vad_iterator(chunk, is_last, return_seconds=True):
                 if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")
                 if save_path is not None and speech_samples is not None:

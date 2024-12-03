@@ -13,14 +13,12 @@
 # limitations under the License.
 
 import math
-import os
 from functools import partial
 from pathlib import Path
 from typing import Union
 
 import numpy as np
 import soundfile as sf
-from modelscope import snapshot_download
 from pyrnnoise import RNNoise
 from tqdm import tqdm
 
@@ -133,8 +131,7 @@ class SileroVAD:
         audio, sample_rate = sf.read(wav_path, dtype=np.float32)
         if sample_rate != self.sample_rate:
             raise ValueError(
-                "Sample rate mismatch.\n"
-                "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
+                "Sample rate mismatch.\n" "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
             )
         if len(audio.shape) > 1:
             raise ValueError("Only supported mono wav.")
@@ -305,10 +302,7 @@ class SileroVAD:
                 if frame_end - temp_end >= self.min_silence_samples:
                     current_speech["end"] = temp_end
                     # keep the speech segment if it is longer than min_speech_samples
-                    if (
-                        current_speech["end"] - current_speech["start"]
-                        > min_speech_samples
-                    ):
+                    if current_speech["end"] - current_speech["start"] > min_speech_samples:
                         current_speech["segment"] = self.segment
                         self.segment += 1
                         yield fn(current_speech)
