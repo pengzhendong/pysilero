@@ -18,13 +18,12 @@ from pathlib import Path
 from typing import Union
 
 import numpy as np
-import soundfile as sf
+from audiolab import info, load_audio, save_audio
+from frame_queue import FrameQueue
+from pickable_session import silero_vad
 from pyrnnoise import RNNoise
 from tqdm import tqdm
-
-from .frame_queue import FrameQueue
-from .pickable_session import silero_vad
-from .utils import get_energy
+from utils import get_energy
 
 
 class SileroVAD:
@@ -127,19 +126,6 @@ class SileroVAD:
             chunk = self.denoise_chunk(self.denoiser, chunk, is_last)
         return self.queue.add_chunk(chunk, is_last)
 
-    def read_audio(self, wav_path: Union[str, Path]):
-        audio, sample_rate = sf.read(wav_path, dtype=np.float32)
-        if sample_rate != self.sample_rate:
-            raise ValueError(
-                "Sample rate mismatch.\n" "Reinitialize SileroVAD(sample_rate=sr) with the correct sample rate."
-            )
-        if len(audio.shape) > 1:
-            raise ValueError("Only supported mono wav.")
-        dur_ms = len(audio) * 1000 / sample_rate
-        if dur_ms < 32:
-            raise ValueError("Input audio is too short.")
-        return audio, sample_rate, dur_ms
-
     def get_speech_probs(self, wav_path: Union[str, Path]):
         """
         Getting speech probabilities of audio frames (32ms/frame)
@@ -153,14 +139,14 @@ class SileroVAD:
         speech_probs: list of speech probabilities
         """
         self.reset()
-        audio, _, dur_ms = self.read_audio(wav_path)
+        audio, _ = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
         progress_bar = tqdm(
-            total=math.ceil(dur_ms / 32),
+            total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
         )
-        for _, _, frame in self.add_chunk(audio, True):
+        for _, _, frame in self.add_chunk(audio[0], True):
             progress_bar.update(1)
             yield np.around(self(frame, self.model_sample_rate)[0][0], 2)
 
@@ -175,12 +161,12 @@ class SileroVAD:
                 denoiser = RNNoise(self.sample_rate)
                 wav = self.denoise_chunk(denoiser, wav, True)
             if flat_layout:
-                sf.write(str(save_path) + f"_{index:05d}.wav", wav, self.sample_rate)
+                save_audio(str(save_path) + f"_{index:05d}.wav", wav[np.newaxis, :], self.sample_rate)
             else:
                 save_path = Path(save_path)
                 if not save_path.exists():
                     save_path.mkdir(parents=True, exist_ok=True)
-                sf.write(str(save_path / f"{index:05d}.wav"), wav, self.sample_rate)
+                save_audio(str(save_path / f"{index:05d}.wav"), wav[np.newaxis, :], self.sample_rate)
         if return_seconds:
             start = round(start / self.sample_rate, 3)
             end = round(end / self.sample_rate, 3)
@@ -223,9 +209,9 @@ class SileroVAD:
             based on return_seconds)
         """
         self.reset()
-        audio, sample_rate, dur_ms = self.read_audio(wav_path)
+        audio, sample_rate = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
         progress_bar = tqdm(
-            total=math.ceil(dur_ms / 32),
+            total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",
             unit="frames",
             bar_format="{l_bar}{bar}{r_bar} | {percentage:.2f}%",
@@ -238,7 +224,7 @@ class SileroVAD:
 
         fn = partial(
             self.process_segment,
-            wav=audio,
+            wav=audio[0],
             save_path=save_path,
             flat_layout=flat_layout,
             return_seconds=return_seconds,
@@ -252,7 +238,7 @@ class SileroVAD:
         # to save potential segment limits in case of maximum segment size reached
         prev_end = 0
         next_start = 0
-        for frame_start, frame_end, frame in self.add_chunk(audio, True):
+        for frame_start, frame_end, frame in self.add_chunk(audio[0], True):
             progress_bar.update(1)
             speech_prob = self(frame, self.model_sample_rate)
             # current frame is speech

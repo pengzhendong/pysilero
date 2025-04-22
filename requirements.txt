@@ -1,3 +1,4 @@
+audiolab
 librosa
 modelscope
 numpy
