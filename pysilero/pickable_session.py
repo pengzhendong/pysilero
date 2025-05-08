@@ -30,12 +30,13 @@ class PickableSession:
         opts.log_severity_level = 3
 
         assert version in ["v4", "v5"]
+        model_id = "pengzhendong/silero-vad"
         try:
-            repo_dir = snapshot_download("pengzhendong/silero-vad")
-        except:
-            import os
+            repo_dir = snapshot_download(model_id)
+        except Exception:
             from modelscope.utils.file_utils import get_default_modelscope_cache_dir
-            repo_dir = os.path.join(get_default_modelscope_cache_dir(), "models/pengzhendong/silero-vad")
+
+            repo_dir = f"{get_default_modelscope_cache_dir()}/models/{model_id}"
         self.model_path = f"{repo_dir}/{version}/silero_vad.onnx"
         self.init_session = partial(ort.InferenceSession, sess_options=opts, providers=["CPUExecutionProvider"])
         self.sess = self.init_session(self.model_path)
