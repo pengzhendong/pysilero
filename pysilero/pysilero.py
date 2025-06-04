@@ -19,11 +19,11 @@ from typing import Union
 
 import numpy as np
 from audiolab import info, load_audio, save_audio
-from frame_queue import FrameQueue
-from pickable_session import silero_vad
+from .frame_queue import FrameQueue
+from .pickable_session import silero_vad
 from pyrnnoise import RNNoise
 from tqdm import tqdm
-from utils import get_energy
+from .utils import get_energy
 
 
 class SileroVAD:
