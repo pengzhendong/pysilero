@@ -27,7 +27,7 @@ setup(
     url="https://github.com/pengzhendong/pysilero",
     packages=find_packages(),
     package_data={
-        "pysilero": ["*.onnx"],
+        "pysilero": ["*/*.onnx"],
     },
     install_requires=requirements,
     entry_points={

@@ -1,8 +1,7 @@
 audiolab
 click
-modelscope
 numpy
 onnxruntime
 soxr
-pyrnnoise
+pyrnnoise>=0.4.5
 tqdm

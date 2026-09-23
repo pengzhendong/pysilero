@@ -12,12 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - name: Download VAD models
+        run: |
+          for v in v4 v5; do
+            mkdir -p pysilero/$v
+            curl -L "https://modelscope.cn/models/pengzhendong/silero-vad/resolve/master/$v/silero_vad.onnx" -o pysilero/$v/silero_vad.onnx
+          done
       - name: Publish
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          echo ${{ inputs.version }} > VERSION
+          echo "$RELEASE_VERSION" > VERSION
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install -U setuptools wheel

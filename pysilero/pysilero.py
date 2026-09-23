@@ -118,9 +118,15 @@ class SileroVAD:
     @staticmethod
     def denoise_chunk(denoiser, chunk, is_last=False):
         frames = []
-        for _, frame in denoiser.process_chunk(chunk, is_last):
+        for _, frame in denoiser.denoise_chunk(chunk, is_last):
             frames.append(frame.squeeze())
-        return np.concatenate(frames) if len(frames) > 0 else np.array([])
+        if len(frames) == 0:
+            return np.array([], dtype=np.float32)
+        frames = np.concatenate(frames)
+        # pyrnnoise outputs int16 pcm, while the VAD expects float32 in [-1, 1]
+        if frames.dtype == np.int16:
+            frames = frames.astype(np.float32) / 32768
+        return frames
 
     def add_chunk(self, chunk, is_last=False):
         if self.denoiser is not None:

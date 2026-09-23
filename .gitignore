@@ -1,0 +1,6 @@
+__pycache__/
+*.egg-info/
+build/
+dist/
+.venv/
+pysilero/v*/silero_vad.onnx
