@@ -19,11 +19,12 @@ from typing import Union
 
 import numpy as np
 from audiolab import info, load_audio, save_audio
-from frame_queue import FrameQueue
-from pickable_session import silero_vad
 from pyrnnoise import RNNoise
 from tqdm import tqdm
-from utils import get_energy
+
+from .frame_queue import FrameQueue
+from .pickable_session import silero_vad
+from .utils import get_energy
 
 
 class SileroVAD:
@@ -139,7 +140,7 @@ class SileroVAD:
         speech_probs: list of speech probabilities
         """
         self.reset()
-        audio, _ = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
+        audio, _ = load_audio(wav_path, dtype=np.float32, sample_rate=self.sample_rate, to_mono=True)
         progress_bar = tqdm(
             total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",
@@ -209,7 +210,7 @@ class SileroVAD:
             based on return_seconds)
         """
         self.reset()
-        audio, sample_rate = load_audio(wav_path, dtype=np.float32, rate=self.sample_rate, to_mono=True)
+        audio, sample_rate = load_audio(wav_path, dtype=np.float32, sample_rate=self.sample_rate, to_mono=True)
         progress_bar = tqdm(
             total=math.ceil(info(wav_path).duration / 0.032),
             desc="VAD processing",

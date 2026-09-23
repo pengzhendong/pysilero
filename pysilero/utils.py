@@ -14,14 +14,18 @@
 
 import warnings
 
-import librosa
 import numpy as np
-import parselmouth
 
 warnings.filterwarnings("ignore")
 
 
 def get_energy(chunk, sr, from_harmonic=1, to_harmonic=5):
+    try:
+        import librosa
+        import parselmouth
+    except ImportError as e:
+        raise ImportError("get_energy requires optional dependencies: pip install librosa praat-parselmouth") from e
+
     sound = parselmouth.Sound(chunk, sampling_frequency=sr)
     # pitch
     pitch = sound.to_pitch(pitch_floor=100, pitch_ceiling=350)

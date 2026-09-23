@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import click
-import matplotlib.pyplot as plt
 import numpy as np
 from audiolab import Reader, Writer, info, load_audio
 
@@ -29,11 +30,13 @@ from pysilero import SileroVAD, VADIterator
 @click.option("--plot/--no-plot", default=False, help="Plot the vad probabilities")
 def main(wav_path, version, denoise, streaming, save_path, plot):
     if not streaming:
-        model = SileroVAD(version, info(wav_path).rate, denoise=denoise)
+        model = SileroVAD(version, info(wav_path).sample_rate, denoise=denoise)
         speech_timestamps = model.get_speech_timestamps(wav_path, return_seconds=True, save_path=save_path)
         print("None streaming result:", list(speech_timestamps))
 
         if plot:
+            import matplotlib.pyplot as plt
+
             audio, rate = load_audio(wav_path, dtype=np.float32)
             x1 = np.arange(0, audio.shape[1]) / rate
             outputs = list(model.get_speech_probs(wav_path))
@@ -43,12 +46,15 @@ def main(wav_path, version, denoise, streaming, save_path, plot):
             plt.show()
     else:
         print("Streaming result:", end=" ")
-        reader = Reader(wav_path, dtype=np.float32, frame_size_ms=10)
+        rate = info(wav_path).sample_rate
+        frame_size = rate // 100  # 10ms
+        reader = Reader(wav_path, dtype=np.float32, frame_size=frame_size)
         if save_path is not None:
-            writer = Writer(save_path, reader.rate, layout=reader.layout)
-        vad_iterator = VADIterator(version, reader.rate)
+            writer = Writer(save_path, rate, dtype=np.float32)
+        vad_iterator = VADIterator(version, rate)
+        num_chunks = math.ceil(reader.num_frames / frame_size)
         for idx, (frame, _) in enumerate(reader):
-            partial = idx == reader.num_frames - 1
+            partial = idx == num_chunks - 1
             for speech_dict, speech_samples in vad_iterator(frame.squeeze(), partial, return_seconds=True):
                 if "start" in speech_dict or "end" in speech_dict:
                     print(speech_dict, end=" ")
